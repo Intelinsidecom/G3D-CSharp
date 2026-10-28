@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -304,6 +304,10 @@ namespace G3D.OpenGL
 
         public void TexImage2D(int target, int level, TextureFormat format, int width, int height, int border, byte[] data)
         {
+            if (target >= (int)TextureTarget.TextureCubeMap && target < (int)TextureTarget.TextureCubeMap + 6)
+            {
+                target = (int)TextureTarget.TextureCubeMapPositiveX + (target - (int)TextureTarget.TextureCubeMap);
+            }
             TextureTarget tt = (TextureTarget)target;
             PixelInternalFormat internalFormat = (PixelInternalFormat)GLTextureFormatMap.internalFormat(format);
             PixelFormat pixelFormat = (PixelFormat)GLTextureFormatMap.baseFormat(format);
@@ -1668,6 +1672,30 @@ namespace G3D.OpenGL
             GL.TexParameter((TextureTarget)target, TextureParameterName.TextureLodBias, bias);
         }
 
+        public void ConfigureCubeMapTexGen(int textureUnit, CubeMapTexGenMode mode)
+        {
+            setActiveTextureUnit(textureUnit);
+
+            if (mode == CubeMapTexGenMode.TEXGEN_OFF)
+            {
+                GL.Disable(EnableCap.TextureGenS);
+                GL.Disable(EnableCap.TextureGenT);
+                GL.Disable(EnableCap.TextureGenR);
+                return;
+            }
+
+            int genMode = (mode == CubeMapTexGenMode.TEXGEN_REFLECTION_MAP)
+                ? (int)TextureGenMode.ReflectionMap
+                : (int)TextureGenMode.NormalMap;
+
+            GL.TexGen(TextureCoordName.S, TextureGenParameter.TextureGenMode, genMode);
+            GL.TexGen(TextureCoordName.T, TextureGenParameter.TextureGenMode, genMode);
+            GL.TexGen(TextureCoordName.R, TextureGenParameter.TextureGenMode, genMode);
+            GL.Enable(EnableCap.TextureGenS);
+            GL.Enable(EnableCap.TextureGenT);
+            GL.Enable(EnableCap.TextureGenR);
+        }
+
         public void SetDrawBuffer(RenderDevice.Buffer drawBuffer)
         {
             switch (drawBuffer)
@@ -1719,6 +1747,10 @@ namespace G3D.OpenGL
             GL.MatrixMode(MatrixMode.Modelview);
             fillMatrixBuffer(matrix);
             GL.LoadMatrix(matrixBuffer);
+        }
+
+        public void SetCameraToWorldMatrix(Matrix4 matrix)
+        {
         }
 
         private void fillMatrixBuffer(Matrix4 matrix)

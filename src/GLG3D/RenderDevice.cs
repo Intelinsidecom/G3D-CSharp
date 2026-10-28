@@ -1,4 +1,4 @@
-/**
+﻿/**
   @file RenderDevice.h
 
   Graphics hardware abstraction layer (wrapper for OpenGL).
@@ -2142,6 +2142,7 @@ public void describeSystem(TextOutput t)
             {
                 backend.SetModelViewMatrix(
                     (state.matrices.cameraToWorldMatrixInverse * state.matrices.objectToWorldMatrix).toMatrix4());
+                backend.SetCameraToWorldMatrix(state.matrices.cameraToWorldMatrix.toMatrix4());
             }
         }
 
@@ -2967,6 +2968,19 @@ public void describeSystem(TextOutput t)
             }
 
             texture.setBackendTextureID(backend, id);
+
+            // The upload above binds the new texture to texture unit 0.  Restore
+            // the unit so that the texture does not affect later rendering.
+            Texture unit0Texture = state.textureUnit.Length > 0 ? state.textureUnit[0].texture : null;
+            if (unit0Texture == null)
+            {
+                backend.BindTexture(0, 0, Texture.Dimension.DIM_2D);
+            }
+            else
+            {
+                int unit0ID = unit0Texture.getBackendTextureID(backend);
+                backend.BindTexture(0, unit0ID, unit0Texture.getDimension());
+            }
             return id;
         }
 
@@ -3355,12 +3369,8 @@ public void describeSystem(TextOutput t)
 
             minStateChange();
             minGLStateChange();
-
-            throw new NotSupportedException(
-                "Reflection maps require reflection texture coordinate generation, which requires the " +
-                "backend operation IGraphicsBackend.ConfigureReflectionMap(int textureUnit, int textureID, " +
-                "Matrix4 textureMatrix), which is not implemented by the OpenGL or Direct3D 11 backends. " +
-                "The texture and texture matrix have been bound; the reflection vector must be computed by a shader.");
+            backend.ConfigureCubeMapTexGen((int)textureUnit,
+                                           CubeMapTexGenMode.TEXGEN_REFLECTION_MAP);
         }
 
         public bool init(GWindow.Settings settings = null, Log log = null)
@@ -3954,12 +3964,15 @@ public void describeSystem(TextOutput t)
                 stencilBits = caps.SupportsStencil ? 8 : 0;
                 depthBits = 24;
                 lightSaturation = 1.0;
+
+                resetState();
             }
             if (backend != null && _window != null)
             {
                 backend.Resize(_window.Width, _window.Height);
                 state.viewport = new Rect2D(0, 0, _window.Width, _window.Height);
                 state.clip2D = state.viewport;
+                backend.SetViewport(state.viewport);
                 backend.SetProjectionMatrix(state.matrices.projectionMatrix);
                 applyModelViewMatrix();
             }

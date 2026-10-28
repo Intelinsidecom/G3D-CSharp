@@ -40,12 +40,19 @@ namespace G3D.Direct3D11
     {
         public int Id;
         public RenderTargetView Color;
+        public RenderTargetView[] Colors = new RenderTargetView[8];
         public DepthStencilView Depth;
         public Texture2D DepthResource;
+        public int Width;
+        public int Height;
 
         public void Dispose()
         {
             if (Color != null) { Color.Dispose(); Color = null; }
+            for (int i = 0; i < Colors.Length; ++i)
+            {
+                if (Colors[i] != null) { Colors[i].Dispose(); Colors[i] = null; }
+            }
             if (Depth != null) { Depth.Dispose(); Depth = null; }
         }
     }

@@ -1,4 +1,4 @@
-/**
+﻿/**
   @file Sky.h
 
   @maintainer Morgan McGuire, morgan@cs.brown.edu
@@ -145,8 +145,17 @@ namespace G3D
 
             if (cube)
             {
-                throw new NotSupportedException(
-                    "Cube map sky rendering requires backend cube map texture coordinate generation, which the current IGraphicsBackend contract does not expose.");
+                rd.setTexture(0, cubeMap.pointer());
+
+                // On Radeon Mobility, explicit cube map coordinates don't work right.
+                // We instead put cube map coords in the normals and use texgen to copy
+                // them over
+                IGraphicsBackend backend = GLCaps.getBackendInstance();
+                backend.ConfigureCubeMapTexGen(0, CubeMapTexGenMode.TEXGEN_NORMAL_MAP);
+
+                CoordinateFrame cframe = rd.getCameraToWorldMatrix();
+                cframe.translation = Vector3.zero();
+                rd.setTextureMatrix(0, cframe);
             }
             else
             {
@@ -226,6 +235,12 @@ namespace G3D
             vertex(rd, -s, -s, +s, 1, 1);
             vertex(rd, +s, -s, +s, 1, 0);
             rd.endPrimitive();
+
+            if (cube)
+            {
+                IGraphicsBackend backend = GLCaps.getBackendInstance();
+                backend.ConfigureCubeMapTexGen(0, CubeMapTexGenMode.TEXGEN_OFF);
+            }
 
             rd.popState();
         }
@@ -642,8 +657,10 @@ namespace G3D
                 throw new ArgumentException("The texture must have dimension DIM_CUBE_MAP.", "_cubeMap");
             }
 
-            throw new NotSupportedException(
-                "Sky.fromCubeMap requires backend cube map texture coordinate generation, which the current IGraphicsBackend contract does not expose. Use Sky.fromFile with six face images instead.");
+            ReferenceCountedPointer<Texture>[] t = new ReferenceCountedPointer<Texture>[6];
+            t[0] = _cubeMap;
+
+            return new ReferenceCountedPointer<Sky>(new Sky(rd, t, directory, true, _drawCelestialBodies, quality));
         }
 
         /**

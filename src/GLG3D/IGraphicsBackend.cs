@@ -4,6 +4,12 @@ using System.Collections.Generic;
 namespace G3D
 {
 
+    /**
+      Texture coordinate generation modes used for cube map lookups.
+      The original used the ARB environment mapping texgen modes.
+     */
+    public enum CubeMapTexGenMode { TEXGEN_OFF, TEXGEN_REFLECTION_MAP, TEXGEN_NORMAL_MAP }
+
     public interface IGraphicsBackend : IDisposable
     {
         GraphicsBackendKind Kind { get; }
@@ -142,9 +148,23 @@ namespace G3D
         void SetTextureLODBias(int textureUnit, float bias);
         void SetDrawBuffer(RenderDevice.Buffer drawBuffer);
 
+        /**
+          Generates cube map texture coordinates on the given texture unit
+          from the reflection vector (the original GL_REFLECTION_MAP_ARB) or
+          from the eye-line vector (the original GL_NORMAL_MAP_ARB).
+         */
+        void ConfigureCubeMapTexGen(int textureUnit, CubeMapTexGenMode mode);
+
         // Matrices
         void SetProjectionMatrix(Matrix4 matrix);
         void SetModelViewMatrix(Matrix4 matrix);
+
+        /**
+          Sets the camera-to-world matrix.  Backends that emulate fixed-function
+          lighting need it to transform world-space light positions into eye
+          space.
+         */
+        void SetCameraToWorldMatrix(Matrix4 matrix);
 
         // Lighting
         void SetLight(int index, GLight light, bool enabled);

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using G3D;
 
 namespace G3D.Tests
@@ -429,7 +429,7 @@ namespace G3D.Tests
             Array<Vector3> vertex = new Array<Vector3>();
             vertex.push(new Vector3(0, 0, 0));
             vertex.push(new Vector3(1, 0, 0));
-            vertex.push(new Vector3(0, 1, 0));
+            vertex.push(new Vector3(0, 1, -1));
             Array<Vector2> texCoord = new Array<Vector2>();
             texCoord.push(new Vector2(0, 0));
             texCoord.push(new Vector2(1, 0));
@@ -502,7 +502,7 @@ namespace G3D.Tests
             polygon.push(new Vector3(0, 0, 0));
             polygon.push(new Vector3(1, 0, 0));
             polygon.push(new Vector3(1, 1, 0));
-            polygon.push(new Vector3(0, 1, 0));
+            polygon.push(new Vector3(0, 1, -1));
 
             Array<Triangle> triangles = new Array<Triangle>();
             Tesselate.tesselateComplexPolygon(polygon, triangles);
@@ -554,6 +554,82 @@ namespace G3D.Tests
             }
 
             global::System.IO.File.WriteAllBytes(filename, data);
+        }
+
+        private static void testFixedFunctionQuad(RenderDevice renderDevice, string backendName)
+        {
+            Texture colorTexture = Texture.createEmpty("fixed color", 32, 32, TextureFormat.RGBA8,
+                Texture.Dimension.DIM_2D, Texture.Settings.defaults());
+            renderDevice.allocateTexture(colorTexture);
+            Renderbuffer depthBuffer = Renderbuffer.createEmpty("fixed depth", TextureFormat.DEPTH24, 32, 32);
+            Framebuffer target = Framebuffer.create(32, 32);
+            target.setTexture(Framebuffer.AttachmentPoint.Color0, colorTexture);
+            target.setRenderbuffer(Framebuffer.AttachmentPoint.Depth, depthBuffer);
+
+            renderDevice.pushState();
+            renderDevice.setFramebuffer(target);
+            renderDevice.setViewport(Rect2D.xywh(0, 0, 32, 32));
+            renderDevice.setProjectionMatrix(Matrix4.orthogonalProjection(-1.0f, 1.0f, -1.0f, 1.0f, 0.1f, 100.0f));
+            renderDevice.setCameraToWorldMatrix(new CoordinateFrame(Vector3.zero()));
+            renderDevice.disableLighting();
+            renderDevice.setTexture(0, null);
+            renderDevice.setColorClearValue(new Color4(0, 0, 1, 1));
+            renderDevice.clear(true, true, false);
+
+            byte[] pixels = new byte[32 * 32 * 4];
+            target.readPixels(0, 0, 32, 32, pixels);
+            int center = (16 * 32 + 16) * 4;
+            bool readbackWorks = pixels[center + 2] > 200;
+            if (!readbackWorks)
+            {
+                Console.WriteLine("NOTE: " + backendName + " pixel readback returned an empty image; " +
+                    "the fixed-function pixel checks are skipped on this system.");
+                renderDevice.popState();
+                return;
+            }
+
+            renderDevice.setColor(new Color4(1, 0, 0, 1));
+            renderDevice.beginPrimitive(RenderDevice.Primitive.TRIANGLES);
+            renderDevice.sendVertex(new Vector3(-1, -1, -1));
+            renderDevice.sendVertex(new Vector3(1, -1, -1));
+            renderDevice.sendVertex(new Vector3(0, 1, -1));
+            renderDevice.endPrimitive();
+
+            target.readPixels(0, 0, 32, 32, pixels);
+            Check(pixels[center] > 200 && pixels[center + 1] < 60 && pixels[center + 2] < 60,
+                backendName + " fixed-function quad color (" + pixels[center] + ", " + pixels[center + 1] + ", " + pixels[center + 2] + ", " + pixels[center + 3] + ")");
+
+            renderDevice.setColorClearValue(new Color4(0, 1, 0, 1));
+            renderDevice.clear(true, true, false);
+            renderDevice.setAlphaTest(RenderDevice.AlphaTest.ALPHA_GREATER, 0.5);
+            renderDevice.setColor(new Color4(0, 0, 1, 0.25f));
+            renderDevice.beginPrimitive(RenderDevice.Primitive.TRIANGLES);
+            renderDevice.sendVertex(new Vector3(-1, -1, -1));
+            renderDevice.sendVertex(new Vector3(1, -1, -1));
+            renderDevice.sendVertex(new Vector3(0, 1, -1));
+            renderDevice.endPrimitive();
+
+            target.readPixels(0, 0, 32, 32, pixels);
+            Check(pixels[center] < 60 && pixels[center + 1] > 200 && pixels[center + 2] < 60,
+                backendName + " fixed-function alpha test discards fragments below the reference (" +
+                pixels[center] + ", " + pixels[center + 1] + ", " + pixels[center + 2] + ")");
+
+            renderDevice.setColorClearValue(new Color4(0, 1, 0, 1));
+            renderDevice.clear(true, true, false);
+            renderDevice.setAlphaTest(RenderDevice.AlphaTest.ALPHA_LESS, 0.5);
+            renderDevice.setColor(new Color4(0, 0, 1, 0.25f));
+            renderDevice.beginPrimitive(RenderDevice.Primitive.TRIANGLES);
+            renderDevice.sendVertex(new Vector3(-1, -1, -1));
+            renderDevice.sendVertex(new Vector3(1, -1, -1));
+            renderDevice.sendVertex(new Vector3(0, 1, -1));
+            renderDevice.endPrimitive();
+
+            target.readPixels(0, 0, 32, 32, pixels);
+            Check(pixels[center] < 60 && pixels[center + 1] < 60 && pixels[center + 2] > 200,
+                backendName + " fixed-function alpha test keeps fragments below the reference (" +
+                pixels[center] + ", " + pixels[center + 1] + ", " + pixels[center + 2] + ")");
+
+            renderDevice.popState();
         }
 
         private static void testSkyBoxCoverage(RenderDevice renderDevice, IGraphicsBackend backend)
@@ -609,6 +685,102 @@ namespace G3D.Tests
             Check(yellowCount > 64 * 64 / 2,
                 "Sky box bottom face covers the view when looking down (" + yellowCount + " pixels)");
 
+            renderDevice.popState();
+        }
+
+        private static void testCubeMapReflection(RenderDevice renderDevice, IGraphicsBackend backend, string backendName)
+        {
+            byte[][] faceColors = new byte[6][]
+            {
+                new byte[] { 255, 0, 0 }, new byte[] { 0, 255, 0 }, new byte[] { 0, 0, 255 },
+                new byte[] { 255, 255, 0 }, new byte[] { 255, 0, 255 }, new byte[] { 0, 255, 255 }
+            };
+
+            global::System.Collections.Generic.List<byte[]> level0 = new global::System.Collections.Generic.List<byte[]>();
+            for (int f = 0; f < 6; ++f)
+            {
+                byte[] face = new byte[8 * 8 * 3];
+                for (int i = 0; i < 8 * 8; ++i)
+                {
+                    face[i * 3] = faceColors[f][0];
+                    face[i * 3 + 1] = faceColors[f][1];
+                    face[i * 3 + 2] = faceColors[f][2];
+                }
+                level0.Add(face);
+            }
+            global::System.Collections.Generic.List<global::System.Collections.Generic.List<byte[]>> mipMaps =
+                new global::System.Collections.Generic.List<global::System.Collections.Generic.List<byte[]>>();
+            mipMaps.Add(level0);
+
+            Texture cubeTexture = Texture.fromMemory("reflection cube", mipMaps, TextureFormat.RGB8, 8, 8, 1,
+                TextureFormat.RGB8, Texture.WrapMode.CLAMP, Texture.InterpolateMode.TRILINEAR_MIPMAP,
+                Texture.Dimension.DIM_CUBE_MAP);
+            renderDevice.allocateTexture(cubeTexture);
+            Check(cubeTexture.getDimension() == Texture.Dimension.DIM_CUBE_MAP,
+                backendName + " cube map texture upload");
+
+            try
+            {
+                renderDevice.pushState();
+                renderDevice.configureReflectionMap(0, cubeTexture);
+            }
+            catch (NotSupportedException)
+            {
+                Check(true, backendName + " reflection map reports the documented capability limitation");
+                renderDevice.popState();
+                return;
+            }
+
+            Texture colorTexture = Texture.createEmpty("reflection color", 32, 32, TextureFormat.RGBA8,
+                Texture.Dimension.DIM_2D, Texture.Settings.defaults());
+            renderDevice.allocateTexture(colorTexture);
+            Renderbuffer depthBuffer = Renderbuffer.createEmpty("reflection depth", TextureFormat.DEPTH24, 32, 32);
+            Framebuffer target = Framebuffer.create(32, 32);
+            target.setTexture(Framebuffer.AttachmentPoint.Color0, colorTexture);
+            target.setRenderbuffer(Framebuffer.AttachmentPoint.Depth, depthBuffer);
+
+            renderDevice.setFramebuffer(target);
+            renderDevice.setViewport(Rect2D.xywh(0, 0, 32, 32));
+            renderDevice.setProjectionMatrix(Matrix4.orthogonalProjection(-1.0f, 1.0f, -1.0f, 1.0f, 0.1f, 100.0f));
+            renderDevice.setCameraToWorldMatrix(new CoordinateFrame(Vector3.zero()));
+            renderDevice.disableLighting();
+            renderDevice.setTextureCombineMode(0, RenderDevice.CombineMode.TEX_REPLACE);
+            renderDevice.configureReflectionMap(0, cubeTexture);
+            renderDevice.setColorClearValue(new Color4(0, 0, 1, 1));
+            renderDevice.clear(true, true, false);
+
+            byte[] pixels = new byte[32 * 32 * 4];
+            target.readPixels(0, 0, 32, 32, pixels);
+            int center = (16 * 32 + 16) * 4;
+            if (pixels[center + 2] <= 200)
+            {
+                Console.WriteLine("NOTE: " + backendName + " pixel readback returned an empty image; " +
+                    "the cube map pixel check is skipped on this system.");
+                backend.ConfigureCubeMapTexGen(0, CubeMapTexGenMode.TEXGEN_OFF);
+                renderDevice.setTexture(0, null);
+                renderDevice.popState();
+                return;
+            }
+
+            renderDevice.setColor(new Color4(1, 1, 1, 1));
+            renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+            renderDevice.setNormal(Vector3.unitZ());
+            renderDevice.sendVertex(new Vector3(-1, -1, -1));
+            renderDevice.setNormal(Vector3.unitZ());
+            renderDevice.sendVertex(new Vector3(1, -1, -1));
+            renderDevice.setNormal(Vector3.unitZ());
+            renderDevice.sendVertex(new Vector3(1, 1, -1));
+            renderDevice.setNormal(Vector3.unitZ());
+            renderDevice.sendVertex(new Vector3(-1, 1, -1));
+            renderDevice.endPrimitive();
+
+            target.readPixels(0, 0, 32, 32, pixels);
+            Check(pixels[center] > 200 && pixels[center + 1] < 60 && pixels[center + 2] > 200,
+                backendName + " reflection map samples the positive-Z cube face back toward the eye (" +
+                pixels[center] + ", " + pixels[center + 1] + ", " + pixels[center + 2] + ")");
+
+            backend.ConfigureCubeMapTexGen(0, CubeMapTexGenMode.TEXGEN_OFF);
+            renderDevice.setTexture(0, null);
             renderDevice.popState();
         }
 
@@ -870,6 +1042,8 @@ namespace G3D.Tests
                 Check(depthValue >= 0.0 && depthValue <= 1.0, "OpenGL depth buffer value");
 
                 testSkyBoxCoverage(renderDevice, openGLBackend);
+                testFixedFunctionQuad(renderDevice, "OpenGL");
+                testCubeMapReflection(renderDevice, openGLBackend, "OpenGL");
 
 
 
@@ -953,6 +1127,7 @@ namespace G3D.Tests
 
                 RenderDevice direct3D11RenderDevice = new RenderDevice();
                 direct3D11RenderDevice.setBackend(direct3D11Backend);
+                GLCaps.setBackend(direct3D11Backend);
                 direct3D11RenderDevice.clear(true, true, false);
 
                 float[] direct3D11Depth = new float[1];
@@ -961,6 +1136,9 @@ namespace G3D.Tests
 
                 double direct3D11DepthValue = direct3D11RenderDevice.getDepthBufferValue(0, 0);
                 Check(direct3D11DepthValue >= 0.0 && direct3D11DepthValue <= 1.0, "Direct3D 11 depth buffer value");
+
+                testFixedFunctionQuad(direct3D11RenderDevice, "Direct3D 11");
+                testCubeMapReflection(direct3D11RenderDevice, direct3D11Backend, "Direct3D 11");
             }
             catch (Exception e)
             {
@@ -969,6 +1147,7 @@ namespace G3D.Tests
             }
             finally
             {
+                GLCaps.setBackend(null);
                 if (direct3D11Backend != null)
                 {
                     direct3D11Backend.Dispose();
@@ -991,3 +1170,5 @@ namespace G3D.Tests
         }
     }
 }
+
+

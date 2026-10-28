@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using SharpDX.D3DCompiler;
@@ -56,6 +56,8 @@ namespace G3D.Direct3D11
         private int nextMilestoneId = 1;
         private int currentProgramID;
         private int currentFramebuffer;
+        private int drawBufferIndex;
+        private VAR[] vertexAttribArrays = new VAR[16];
         private int currentBoundBuffer;
         private int currentBufferTarget;
         private DepthStencilView activeDepthView;
@@ -66,6 +68,7 @@ namespace G3D.Direct3D11
         private int stencilClearValue;
         private Matrix4 projection = Matrix4.identity();
         private Matrix4 modelView = Matrix4.identity();
+        private Matrix4 cameraToWorld = Matrix4.identity();
         private Matrix4 lightMvp = Matrix4.identity();
         private Matrix4 textureMatrix = Matrix4.identity();
         private Color4 ambient = new Color4(0.1f, 0.1f, 0.1f, 1.0f);
@@ -73,6 +76,9 @@ namespace G3D.Direct3D11
         private float shininess = 32.0f;
         private bool lightingEnabled = true;
         private bool twoSidedLighting;
+        private RenderDevice.AlphaTest alphaTest = RenderDevice.AlphaTest.ALPHA_CURRENT;
+        private double alphaTestReference;
+        private RenderDevice.CombineMode combineMode = RenderDevice.CombineMode.TEX_CURRENT;
         private GLight[] lights = new GLight[8];
         private bool[] lightEnabled = new bool[8];
         private readonly Dictionary<int, int> boundTextures = new Dictionary<int, int>();
@@ -150,8 +156,8 @@ namespace G3D.Direct3D11
             caps.SupportsPixelProgram = true;
             caps.SupportsVertexBufferObject = true;
             caps.SupportsTextureRectangle = false;
-            caps.SupportsAlphaTest = false;
-            caps.SupportsTextureCombineModes = false;
+            caps.SupportsAlphaTest = true;
+            caps.SupportsTextureCombineModes = true;
             caps.SupportsTextureLODBias = true;
             caps.SupportsGenericVertexAttributes = false;
             caps.SupportsStereoDrawBuffers = false;
@@ -216,6 +222,8 @@ namespace G3D.Direct3D11
 
         private void CreateRenderTarget()
         {
+            TextureFormat.screenDepthBitsProvider = delegate { return 24; };
+            TextureFormat.screenStencilBitsProvider = delegate { return 8; };
             using (Texture2D backBuffer = swapChain.GetBackBuffer<Texture2D>(0)) renderTargetView = new RenderTargetView(device, backBuffer);
             Direct3D11Texture depth = new Direct3D11Texture();
             depth.Width = window.Width;
@@ -250,7 +258,7 @@ namespace G3D.Direct3D11
                 new InputElement("TEXCOORD", 0, DxgiFormat.R32G32B32A32_Float, 48, 0)
             };
             fixedInputLayout = new InputLayout(device, vs.Bytecode, elements);
-            constantsBuffer = new SharpDX.Direct3D11.Buffer(device, new BufferDescription { SizeInBytes = 320, Usage = ResourceUsage.Dynamic, BindFlags = BindFlags.ConstantBuffer, CpuAccessFlags = CpuAccessFlags.Write });
+            constantsBuffer = new SharpDX.Direct3D11.Buffer(device, new BufferDescription { SizeInBytes = 912, Usage = ResourceUsage.Dynamic, BindFlags = BindFlags.ConstantBuffer, CpuAccessFlags = CpuAccessFlags.Write });
             immediateVertexBuffer = new SharpDX.Direct3D11.Buffer(device, new BufferDescription { SizeInBytes = 1024 * 64, Usage = ResourceUsage.Dynamic, BindFlags = BindFlags.VertexBuffer, CpuAccessFlags = CpuAccessFlags.Write });
             context.InputAssembler.InputLayout = fixedInputLayout;
             context.VertexShader.Set(fixedVertexShader);
@@ -341,9 +349,14 @@ namespace G3D.Direct3D11
                 context.PixelShader.SetShaderResource(textureUnit, null);
                 boundTextures.Remove(textureUnit);
                 currentTextureID = 0;
+                if (textureUnit == 0) fixedTextureUnit = -1;
                 return;
             }
             Direct3D11Texture t; if (!textures.TryGetValue(textureID, out t)) return;
+            if (dimension == Texture.Dimension.DIM_CUBE_MAP || dimension == Texture.Dimension.DIM_CUBE_MAP_NPOT)
+            {
+                t.IsCube = true;
+            }
             ShaderResourceView view = t.IsDepth ? t.ComparisonView : t.ShaderView;
             if (view == null)
             {
@@ -360,8 +373,22 @@ namespace G3D.Direct3D11
             }
             boundTextures[textureUnit] = textureID;
             currentTextureID = textureID;
+            if (textureUnit == 0) fixedTextureUnit = 0;
         }
-        public int GetTextureTarget(Texture.Dimension dimension) { return 0x0DE1; }
+        public int GetTextureTarget(Texture.Dimension dimension)
+        {
+            if (dimension == Texture.Dimension.DIM_CUBE_MAP || dimension == Texture.Dimension.DIM_CUBE_MAP_NPOT)
+            {
+                return 0x8513;
+            }
+            return 0x0DE1;
+        }
+        public void ConfigureCubeMapTexGen(int textureUnit, CubeMapTexGenMode mode)
+        {
+            throw new NotSupportedException(
+                "G3D.Direct3D11: cube map texture coordinate generation is a fixed-function OpenGL feature. " +
+                "Compute the reflection or eye-line vector in a shader and sample the cube map there.");
+        }
         public void TexImage2D(int target, int level, TextureFormat format, int width, int height, int border, byte[] data)
         {
             Direct3D11Texture texture;
@@ -370,14 +397,50 @@ namespace G3D.Direct3D11
                 throw new InvalidOperationException("No texture is bound for upload.");
             }
             if (data == null || texture.IsDepth) return;
-            byte[] converted = ConvertTextureData(format, data, width, height);
-            if (level >= 0 && level < texture.Resource.Description.MipLevels)
+            bool cube = target >= 0x8513 && target < 0x8513 + 6;
+            int face = 0;
+            if (cube)
             {
-                context.UpdateSubresource(converted, texture.Resource, level, 0, 0, null);
+                face = target - 0x8513;
+                texture.IsCube = true;
+                ensureCubeResource(texture);
             }
-            recordTextureLevel(texture.Id, level, converted);
+            byte[] converted = ConvertTextureData(format, data, width, height);
+            int mipLevels = texture.Resource.Description.MipLevels;
+            if (level >= 0 && level < mipLevels)
+            {
+                int subresource = cube ? (face * mipLevels + level) : level;
+                context.UpdateSubresource(converted, texture.Resource, subresource, 0, 0, null);
+            }
+            recordTextureLevel(texture.Id, level, face, converted);
+        }
+        private void ensureCubeResource(Direct3D11Texture texture)
+        {
+            Texture2DDescription description = texture.Resource.Description;
+            if (description.OptionFlags == ResourceOptionFlags.TextureCube && description.ArraySize == 6)
+            {
+                return;
+            }
+            if (texture.ShaderView != null) { texture.ShaderView.Dispose(); texture.ShaderView = null; }
+            if (texture.ColorView != null) { texture.ColorView.Dispose(); texture.ColorView = null; }
+            texture.Resource.Dispose();
+            description.ArraySize = 6;
+            description.OptionFlags = ResourceOptionFlags.TextureCube;
+            description.BindFlags = BindFlags.ShaderResource;
+            description.Usage = ResourceUsage.Default;
+            texture.Resource = new Texture2D(device, description);
+            texture.ShaderView = new ShaderResourceView(device, texture.Resource, new ShaderResourceViewDescription
+            {
+                Format = description.Format,
+                Dimension = ShaderResourceViewDimension.TextureCube,
+                TextureCube = new ShaderResourceViewDescription.TextureCubeResource { MostDetailedMip = 0, MipLevels = -1 }
+            });
         }
         private void recordTextureLevel(int textureID, int level, byte[] data)
+        {
+            recordTextureLevel(textureID, level, 0, data);
+        }
+        private void recordTextureLevel(int textureID, int level, int face, byte[] data)
         {
             List<byte[]> levels;
             if (!textureLevelData.TryGetValue(textureID, out levels))
@@ -385,11 +448,14 @@ namespace G3D.Direct3D11
                 levels = new List<byte[]>();
                 textureLevelData[textureID] = levels;
             }
-            while (levels.Count <= level)
+            Direct3D11Texture texture;
+            bool cube = textures.TryGetValue(textureID, out texture) && texture.IsCube;
+            int index = cube ? (level * 6 + face) : level;
+            while (levels.Count <= index)
             {
                 levels.Add(null);
             }
-            levels[level] = data;
+            levels[index] = data;
         }
         public void CompressedTexImage2D(int target, TextureFormat format, int width, int height, List<List<byte[]>> mipMaps)
         {
@@ -411,7 +477,7 @@ namespace G3D.Direct3D11
             if (texture.ShaderView != null) { texture.ShaderView.Dispose(); texture.ShaderView = null; }
             if (texture.ColorView != null) { texture.ColorView.Dispose(); texture.ColorView = null; }
             texture.Resource.Dispose();
-            texture.Resource = new Texture2D(device, new Texture2DDescription
+            Texture2DDescription description = new Texture2DDescription
             {
                 Width = width,
                 Height = height,
@@ -421,13 +487,28 @@ namespace G3D.Direct3D11
                 SampleDescription = new SampleDescription(1, 0),
                 Usage = ResourceUsage.Default,
                 BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget
-            });
-            texture.ShaderView = new ShaderResourceView(device, texture.Resource, new ShaderResourceViewDescription
+            };
+            if (faceCount == 6)
+            {
+                description.OptionFlags = ResourceOptionFlags.TextureCube;
+                description.BindFlags = BindFlags.ShaderResource;
+            }
+            texture.Resource = new Texture2D(device, description);
+            texture.IsCube = faceCount == 6;
+            ShaderResourceViewDescription shaderViewDescription = new ShaderResourceViewDescription
             {
                 Format = TextureFormatMap.ToDXGI(format),
                 Dimension = faceCount == 6 ? ShaderResourceViewDimension.TextureCube : ShaderResourceViewDimension.Texture2D
-            });
-            texture.ColorView = new RenderTargetView(device, texture.Resource);
+            };
+            if (faceCount == 6)
+            {
+                shaderViewDescription.TextureCube = new ShaderResourceViewDescription.TextureCubeResource { MostDetailedMip = 0, MipLevels = -1 };
+            }
+            texture.ShaderView = new ShaderResourceView(device, texture.Resource, shaderViewDescription);
+            if (faceCount != 6)
+            {
+                texture.ColorView = new RenderTargetView(device, texture.Resource);
+            }
             for (int level = 0; level < mipCount; ++level)
             {
                 for (int face = 0; face < faceCount; ++face)
@@ -481,6 +562,47 @@ namespace G3D.Direct3D11
             if (isCompressedFormat(texture.Resource.Description.Format))
             {
                 throw new NotSupportedException("G3D.Direct3D11: mipmap generation is not supported for block compressed textures.");
+            }
+            if (texture.IsCube)
+            {
+                int cubeBytes = bytesPerPixel(texture.Resource.Description.Format);
+                int cubeMipLevels = texture.Resource.Description.MipLevels;
+                List<byte[]> cubeLevels;
+                if (!textureLevelData.TryGetValue(texture.Id, out cubeLevels))
+                {
+                    cubeLevels = new List<byte[]>();
+                    textureLevelData[texture.Id] = cubeLevels;
+                }
+                for (int face = 0; face < 6; ++face)
+                {
+                    byte[] previousFace = cubeLevels.Count > face ? cubeLevels[face] : null;
+                    if (previousFace == null)
+                    {
+                        previousFace = new byte[texture.Width * texture.Height * cubeBytes];
+                        recordTextureLevel(texture.Id, 0, face, previousFace);
+                    }
+                    int faceWidth = texture.Width;
+                    int faceHeight = texture.Height;
+                    for (int level = 1; level < cubeMipLevels; ++level)
+                    {
+                        int recordedIndex = level * 6 + face;
+                        byte[] destination;
+                        if (cubeLevels.Count > recordedIndex && cubeLevels[recordedIndex] != null)
+                        {
+                            destination = cubeLevels[recordedIndex];
+                        }
+                        else
+                        {
+                            destination = downsample(previousFace, faceWidth, faceHeight, cubeBytes);
+                        }
+                        context.UpdateSubresource(destination, texture.Resource, face * cubeMipLevels + level, 0, 0, null);
+                        recordTextureLevel(texture.Id, level, face, destination);
+                        previousFace = destination;
+                        faceWidth = Math.Max(1, faceWidth / 2);
+                        faceHeight = Math.Max(1, faceHeight / 2);
+                    }
+                }
+                return;
             }
             List<byte[]> levels;
             if (!textureLevelData.TryGetValue(texture.Id, out levels))
@@ -692,11 +814,51 @@ namespace G3D.Direct3D11
         public void DisableShadowMap(int textureUnit) { if (fixedTextureUnit == textureUnit) fixedTextureUnit = -1; }
         public void CopyTexImage2D(int target, int level, int x, int y, int width, int height, int border)
         {
-            throw new NotSupportedException("G3D.Direct3D11: copying the render target into a texture is not implemented by the Direct3D 11 backend.");
+            CopyTexSubImage2D(target, level, 0, 0, x, y, width, height);
         }
         public void CopyTexSubImage2D(int target, int level, int xoffset, int yoffset, int x, int y, int width, int height)
         {
-            throw new NotSupportedException("G3D.Direct3D11: copying the render target into a texture is not implemented by the Direct3D 11 backend.");
+            Direct3D11Texture texture;
+            if (!textures.TryGetValue(currentTextureID, out texture) || texture.Resource == null)
+            {
+                throw new InvalidOperationException("No texture is bound for the copy.");
+            }
+            if (level < 0 || level >= texture.Resource.Description.MipLevels)
+            {
+                return;
+            }
+            Texture2D source = activeColorView != null ? activeColorView.ResourceAs<Texture2D>() : null;
+            if (source == null)
+            {
+                throw new NotSupportedException("G3D.Direct3D11: the active render target cannot be copied into a texture.");
+            }
+            if (source.Description.Format != texture.Resource.Description.Format)
+            {
+                throw new NotSupportedException(
+                    "G3D.Direct3D11: copying the render target into a texture requires the source and destination formats to match.");
+            }
+            int sourceHeight = source.Description.Height;
+            int sourceY = sourceHeight - y - height;
+            if (sourceY < 0 || x < 0 || x + width > source.Description.Width || y + height > sourceHeight)
+            {
+                return;
+            }
+            int destinationHeight = texture.Resource.Description.Height >> level;
+            int destinationY = destinationHeight - yoffset - height;
+            if (destinationY < 0 || xoffset < 0 || xoffset + width > (texture.Resource.Description.Width >> level))
+            {
+                return;
+            }
+            ResourceRegion destination = new ResourceRegion
+            {
+                Left = xoffset,
+                Top = destinationY,
+                Right = xoffset + width,
+                Bottom = destinationY + height,
+                Front = 0,
+                Back = 1
+            };
+            context.CopySubresourceRegion(texture.Resource, level, destination, source, 0, x, sourceY, 0);
         }
         public void GetTexImage(int target, int level, TextureFormat format, byte[] data)
         {
@@ -1299,8 +1461,44 @@ namespace G3D.Direct3D11
         public void BindFramebuffer(int framebufferID)
         {
             currentFramebuffer = framebufferID;
-            if (framebufferID == 0) { activeDepthView = defaultDepthView; activeDepthResource = defaultDepthResource; activeColorView = renderTargetView; context.OutputMerger.SetRenderTargets(activeDepthView, activeColorView); return; }
-            Direct3D11Framebuffer f; if (framebuffers.TryGetValue(framebufferID, out f)) { activeDepthView = f.Depth; activeDepthResource = f.DepthResource; activeColorView = f.Color; context.OutputMerger.SetRenderTargets(activeDepthView, activeColorView); }
+            if (framebufferID == 0)
+            {
+                activeDepthView = defaultDepthView;
+                activeDepthResource = defaultDepthResource;
+                activeColorView = renderTargetView;
+                targetHeight = Math.Max(1.0f, window.Height);
+                context.OutputMerger.SetRenderTargets(activeDepthView, renderTargetView);
+                return;
+            }
+            Direct3D11Framebuffer f;
+            if (framebuffers.TryGetValue(framebufferID, out f))
+            {
+                activeDepthView = f.Depth;
+                activeDepthResource = f.DepthResource;
+                activeColorView = f.Color;
+                if (f.Height > 0) targetHeight = f.Height;
+                applyRenderTargets(f);
+            }
+        }
+        private void applyRenderTargets(Direct3D11Framebuffer f)
+        {
+            List<RenderTargetView> views = new List<RenderTargetView>();
+            bool selected = drawBufferIndex > 0 && drawBufferIndex < f.Colors.Length && f.Colors[drawBufferIndex] != null;
+            if (selected)
+            {
+                views.Add(f.Colors[drawBufferIndex]);
+            }
+            for (int i = 0; i < f.Colors.Length; ++i)
+            {
+                if (selected && i == drawBufferIndex) continue;
+                if (f.Colors[i] != null) views.Add(f.Colors[i]);
+            }
+            if (drawBufferIndex < 0)
+            {
+                context.OutputMerger.SetRenderTargets(activeDepthView, (RenderTargetView)null);
+                return;
+            }
+            context.OutputMerger.SetRenderTargets(activeDepthView, views.ToArray());
         }
         public int GetBoundFramebuffer() { return currentFramebuffer; }
         public void FramebufferTexture2D(int target, int attachment, int textarget, int textureID, int level) { AttachFramebufferTexture(currentFramebuffer, attachment == 1 ? Framebuffer.AttachmentPoint.Depth : Framebuffer.AttachmentPoint.Color0, textureID); }
@@ -1312,12 +1510,47 @@ namespace G3D.Direct3D11
         public void AttachFramebufferTexture(int framebufferID, Framebuffer.AttachmentPoint attachment, int textureID, int mipLevel, int cubeFace)
         {
             Direct3D11Framebuffer f; Direct3D11Texture t; if (!framebuffers.TryGetValue(framebufferID, out f) || !textures.TryGetValue(textureID, out t)) return;
-            if (attachment == Framebuffer.AttachmentPoint.Depth) { f.Depth = t.DepthView; f.DepthResource = t.Resource as Texture2D; } else f.Color = t.ColorView;
+            if (attachment == Framebuffer.AttachmentPoint.Depth) { f.Depth = t.DepthView; f.DepthResource = t.Resource as Texture2D; }
+            else
+            {
+                int index = colorAttachmentIndex(attachment);
+                if (index >= 0 && index < f.Colors.Length)
+                {
+                    f.Colors[index] = t.ColorView;
+                    if (index == 0) f.Color = t.ColorView;
+                }
+            }
+            f.Width = t.Width; f.Height = t.Height;
         }
         public void AttachFramebufferRenderbuffer(int framebufferID, Framebuffer.AttachmentPoint attachment, int renderbufferID)
         {
             Direct3D11Framebuffer f; Direct3D11Renderbuffer r; if (!framebuffers.TryGetValue(framebufferID, out f) || !renderbuffers.TryGetValue(renderbufferID, out r)) return;
-            if (attachment == Framebuffer.AttachmentPoint.Depth) { f.Depth = r.DepthView; f.DepthResource = r.Resource; } else f.Color = r.ColorView;
+            if (attachment == Framebuffer.AttachmentPoint.Depth) { f.Depth = r.DepthView; f.DepthResource = r.Resource; }
+            else
+            {
+                int index = colorAttachmentIndex(attachment);
+                if (index >= 0 && index < f.Colors.Length)
+                {
+                    f.Colors[index] = r.ColorView;
+                    if (index == 0) f.Color = r.ColorView;
+                }
+            }
+            f.Width = r.Width; f.Height = r.Height;
+        }
+        private static int colorAttachmentIndex(Framebuffer.AttachmentPoint attachment)
+        {
+            switch (attachment)
+            {
+                case Framebuffer.AttachmentPoint.Color0: return 0;
+                case Framebuffer.AttachmentPoint.Color1: return 1;
+                case Framebuffer.AttachmentPoint.Color2: return 2;
+                case Framebuffer.AttachmentPoint.Color3: return 3;
+                case Framebuffer.AttachmentPoint.Color4: return 4;
+                case Framebuffer.AttachmentPoint.Color5: return 5;
+                case Framebuffer.AttachmentPoint.Color6: return 6;
+                case Framebuffer.AttachmentPoint.Color7: return 7;
+                default: return -1;
+            }
         }
         public bool CheckFramebufferStatus() { return true; }
         public int CreateRenderbuffer()
@@ -1357,7 +1590,7 @@ namespace G3D.Direct3D11
                 Format = dxgiFormat,
                 SampleDescription = new SampleDescription(1, 0),
                 Usage = ResourceUsage.Default,
-                BindFlags = BindFlags.RenderTarget | BindFlags.DepthStencil
+                BindFlags = TextureFormatMap.IsDepth(format) ? BindFlags.DepthStencil : BindFlags.RenderTarget
             });
             if (TextureFormatMap.IsDepth(format))
             {
@@ -1458,6 +1691,24 @@ namespace G3D.Direct3D11
             }
         }
 
+        private static bool isStandardSemantic(string semanticName)
+        {
+            if (semanticName == null) return false;
+            string upper = semanticName.ToUpperInvariant();
+            return upper == "POSITION" || upper == "NORMAL" || upper == "COLOR" || upper == "TEXCOORD0";
+        }
+
+        private VAR varForAttribute(Direct3D11VertexAttribute attribute, VAR vertexArray, VAR normalArray, VAR colorArray, VAR texCoordArray)
+        {
+            if (attribute.SemanticName == null) return varForAttributeSlot(attribute.Slot, vertexArray, normalArray, colorArray, texCoordArray);
+            string upper = attribute.SemanticName.ToUpperInvariant();
+            if (upper == "POSITION") return vertexArray;
+            if (upper == "NORMAL") return normalArray;
+            if (upper == "COLOR") return colorArray;
+            if (upper == "TEXCOORD0") return texCoordArray;
+            return null;
+        }
+
         private void drawVarWithProgram(RenderDevice.Primitive primitive, int numIndices, Direct3D11Program program,
             VAR vertexArray, VAR normalArray, VAR colorArray, VAR texCoordArray, VAR indexArray)
         {
@@ -1465,7 +1716,23 @@ namespace G3D.Direct3D11
 
             foreach (Direct3D11VertexAttribute attr in program.Attributes)
             {
-                VAR array = varForAttributeSlot(attr.Slot, vertexArray, normalArray, colorArray, texCoordArray);
+                VAR array = varForAttribute(attr, vertexArray, normalArray, colorArray, texCoordArray);
+                if (array == null) continue;
+                byte[] data = array.getData();
+                if (data == null || data.Length == 0) continue;
+                ensureVertexBuffer(ref attrBuffers[attr.Slot], data.Length);
+                uploadVertexBuffer(attrBuffers[attr.Slot], data);
+                context.InputAssembler.SetVertexBuffers(attr.Slot, new VertexBufferBinding(attrBuffers[attr.Slot], array.getStride(), 0));
+            }
+
+            // Generic vertex attributes fill the shader inputs that are not one of
+            // the standard semantics, in ascending attribute number order.
+            int genericIndex = 0;
+            foreach (Direct3D11VertexAttribute attr in program.Attributes)
+            {
+                if (isStandardSemantic(attr.SemanticName)) continue;
+                VAR array = genericIndex < vertexAttribArrays.Length ? vertexAttribArrays[genericIndex] : null;
+                ++genericIndex;
                 if (array == null) continue;
                 byte[] data = array.getData();
                 if (data == null || data.Length == 0) continue;
@@ -1602,17 +1869,113 @@ namespace G3D.Direct3D11
         {
             Matrix4 mvp = ClipSpace.Multiply(ClipSpace.ToDirect3D(projection), modelView);
             Matrix4 light = ClipSpace.ToDirect3D(lightMvp);
-            float[] data = new float[80]; int at = 0;
+            float[] data = new float[228]; int at = 0;
             for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) data[at++] = mvp.elt(r, c);
             for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) data[at++] = light.elt(r, c);
-            data[at++] = lights[0].position.x; data[at++] = lights[0].position.y; data[at++] = lights[0].position.z; data[at++] = 0;
-            Color3 lc = lights[0].color; data[at++] = lc.r; data[at++] = lc.g; data[at++] = lc.b; data[at++] = 1;
-            data[at++] = ambient.r; data[at++] = ambient.g; data[at++] = ambient.b; data[at++] = ambient.a;
-            data[at++] = 1; data[at++] = 1; data[at++] = 1; data[at++] = shininess;
-            data[at++] = fixedTextureUnit >= 0 ? 1.0f : 0.0f; data[at++] = 0.0f; data[at++] = 0.0f; data[at++] = 0.0f;
             for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) data[at++] = textureMatrix.elt(r, c);
+            for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) data[at++] = modelView.elt(r, c);
+
+            Matrix3 normalMatrix = new Matrix3(
+                modelView.elt(0, 0), modelView.elt(0, 1), modelView.elt(0, 2),
+                modelView.elt(1, 0), modelView.elt(1, 1), modelView.elt(1, 2),
+                modelView.elt(2, 0), modelView.elt(2, 1), modelView.elt(2, 2));
+            normalMatrix = normalMatrix.inverse().transpose();
+            for (int r = 0; r < 3; ++r)
+            {
+                data[at++] = normalMatrix.elt(r, 0);
+                data[at++] = normalMatrix.elt(r, 1);
+                data[at++] = normalMatrix.elt(r, 2);
+                data[at++] = 0.0f;
+            }
+
+            data[at++] = ambient.r; data[at++] = ambient.g; data[at++] = ambient.b; data[at++] = ambient.a;
+
+            data[at++] = specular.r; data[at++] = specular.g; data[at++] = specular.b; data[at++] = 1.0f;
+
+            data[at++] = shininess;
+            data[at++] = twoSidedLighting ? 1.0f : 0.0f;
+            data[at++] = lightingEnabled ? 1.0f : 0.0f;
+            data[at++] = fixedTextureUnit >= 0 ? 1.0f : 0.0f;
+
+            int lightCount = 0;
+            for (int i = 0; i < lights.Length; ++i)
+            {
+                if (lightEnabled[i]) ++lightCount;
+            }
+            data[at++] = 0.0f; data[at++] = 0.0f; data[at++] = 0.0f; data[at++] = lightCount;
+
+            data[at++] = 0.0f; data[at++] = 0.0f; data[at++] = 0.0f; data[at++] = 0.0f;
+
+            data[at++] = CombineModeIndex(combineMode);
+            data[at++] = AlphaTestIndex(alphaTest);
+            data[at++] = (float)alphaTestReference;
+            data[at++] = 0.0f;
+
+            Matrix4 cameraToWorldInverse = cameraToWorld.inverse();
+            for (int i = 0; i < lights.Length; ++i)
+            {
+                GLight lightValue = lights[i] ?? new GLight();
+                Vector4 eyePosition = cameraToWorldInverse * lightValue.position;
+                data[at++] = eyePosition.x; data[at++] = eyePosition.y; data[at++] = eyePosition.z; data[at++] = lightValue.position.w;
+            }
+            for (int i = 0; i < lights.Length; ++i)
+            {
+                GLight lightValue = lights[i] ?? new GLight();
+                Vector3 eyeDirection = (cameraToWorldInverse * new Vector4(lightValue.spotDirection, 0.0f)).xyz();
+                data[at++] = eyeDirection.x; data[at++] = eyeDirection.y; data[at++] = eyeDirection.z; data[at++] = (float)lightValue.spotCutoff;
+            }
+            for (int i = 0; i < lights.Length; ++i)
+            {
+                GLight lightValue = lights[i] ?? new GLight();
+                Color3 color = lightValue.color;
+                float flags = (lightValue.diffuse ? 1.0f : 0.0f) + (lightValue.specular ? 2.0f : 0.0f);
+                data[at++] = color.r; data[at++] = color.g; data[at++] = color.b; data[at++] = flags;
+            }
+            for (int i = 0; i < lights.Length; ++i)
+            {
+                GLight lightValue = lights[i] ?? new GLight();
+                data[at++] = (float)lightValue.attenuation[0];
+                data[at++] = (float)lightValue.attenuation[1];
+                data[at++] = (float)lightValue.attenuation[2];
+                data[at++] = 0.0f;
+            }
+
             context.UpdateSubresource(data, constantsBuffer, 0, 0, 0, null);
         }
+
+        private static int CombineModeIndex(RenderDevice.CombineMode mode)
+        {
+            switch (mode)
+            {
+                case RenderDevice.CombineMode.TEX_REPLACE: return 0;
+                case RenderDevice.CombineMode.TEX_BLEND: return 1;
+                case RenderDevice.CombineMode.TEX_INTERPOLATE: return 2;
+                case RenderDevice.CombineMode.TEX_ADD: return 3;
+                case RenderDevice.CombineMode.TEX_MODULATE: return 4;
+                case RenderDevice.CombineMode.TEX_ADD_SIGNED: return 5;
+                case RenderDevice.CombineMode.TEX_SUBTRACT: return 6;
+                case RenderDevice.CombineMode.TEX_DOT3_RGB: return 7;
+                case RenderDevice.CombineMode.TEX_DOT3_RGBA: return 8;
+                default: return 4;
+            }
+        }
+
+        private static int AlphaTestIndex(RenderDevice.AlphaTest test)
+        {
+            switch (test)
+            {
+                case RenderDevice.AlphaTest.ALPHA_GREATER: return 1;
+                case RenderDevice.AlphaTest.ALPHA_LESS: return 1;
+                case RenderDevice.AlphaTest.ALPHA_GEQUAL: return 3;
+                case RenderDevice.AlphaTest.ALPHA_LEQUAL: return 3;
+                case RenderDevice.AlphaTest.ALPHA_NOTEQUAL: return 5;
+                case RenderDevice.AlphaTest.ALPHA_EQUAL: return 6;
+                case RenderDevice.AlphaTest.ALPHA_ALWAYS_PASS: return 7;
+                case RenderDevice.AlphaTest.ALPHA_NEVER_PASS: return 8;
+                default: return 0;
+            }
+        }
+
         private PrimitiveTopology TopologyFor(RenderDevice.Primitive p)
         {
             switch (p) { case RenderDevice.Primitive.LINES: return PrimitiveTopology.LineList; case RenderDevice.Primitive.LINE_STRIP: return PrimitiveTopology.LineStrip; case RenderDevice.Primitive.TRIANGLES: return PrimitiveTopology.TriangleList; case RenderDevice.Primitive.TRIANGLE_STRIP: return PrimitiveTopology.TriangleStrip; case RenderDevice.Primitive.TRIANGLE_FAN: return PrimitiveTopology.TriangleList; case RenderDevice.Primitive.QUADS: return PrimitiveTopology.TriangleList; case RenderDevice.Primitive.QUAD_STRIP: return PrimitiveTopology.TriangleStrip; default: return PrimitiveTopology.PointList; }
@@ -1696,25 +2059,63 @@ namespace G3D.Direct3D11
         }
         public void SetAlphaTest(RenderDevice.AlphaTest test, double reference)
         {
-            if (test == RenderDevice.AlphaTest.ALPHA_CURRENT) return;
-            throw new NotSupportedException("G3D.Direct3D11: the fixed-function alpha test requires the alpha-test shader permutation, which the Direct3D 11 backend does not implement.");
+            alphaTest = test;
+            alphaTestReference = reference;
         }
         public void SetTextureCombineMode(int textureUnit, RenderDevice.CombineMode mode)
         {
-            if (mode == RenderDevice.CombineMode.TEX_CURRENT) return;
-            if (mode != RenderDevice.CombineMode.TEX_MODULATE)
-            {
-                throw new NotSupportedException("G3D.Direct3D11: the fixed-function texture environment supports TEX_MODULATE only.");
-            }
+            if (textureUnit == fixedTextureUnit) combineMode = mode;
         }
         public void SetVertexAttribArray(int attribNum, VAR v, bool normalize)
         {
-            throw new NotSupportedException("G3D.Direct3D11: generic vertex attributes are not supported by the Direct3D 11 backend; use the POSITION, NORMAL, COLOR and TEXCOORD semantics.");
+            if (attribNum < 0 || attribNum >= vertexAttribArrays.Length)
+            {
+                throw new ArgumentOutOfRangeException("attribNum");
+            }
+            vertexAttribArrays[attribNum] = v;
         }
         public void SetDrawBuffer(RenderDevice.Buffer drawBuffer)
         {
             if (drawBuffer == RenderDevice.Buffer.BUFFER_CURRENT) return;
-            throw new NotSupportedException("G3D.Direct3D11: stereo and multiple render target draw buffers are not supported by the Direct3D 11 backend.");
+            switch (drawBuffer)
+            {
+                case RenderDevice.Buffer.BUFFER_NONE:
+                    drawBufferIndex = -1;
+                    break;
+                case RenderDevice.Buffer.BUFFER_COLOR0:
+                case RenderDevice.Buffer.BUFFER_COLOR1:
+                case RenderDevice.Buffer.BUFFER_COLOR2:
+                case RenderDevice.Buffer.BUFFER_COLOR3:
+                case RenderDevice.Buffer.BUFFER_COLOR4:
+                case RenderDevice.Buffer.BUFFER_COLOR5:
+                case RenderDevice.Buffer.BUFFER_COLOR6:
+                case RenderDevice.Buffer.BUFFER_COLOR7:
+                    drawBufferIndex = (int)drawBuffer - (int)RenderDevice.Buffer.BUFFER_COLOR0;
+                    break;
+                case RenderDevice.Buffer.BUFFER_BACK:
+                case RenderDevice.Buffer.BUFFER_BACK_LEFT:
+                case RenderDevice.Buffer.BUFFER_BACK_RIGHT:
+                    drawBufferIndex = 0;
+                    break;
+                case RenderDevice.Buffer.BUFFER_FRONT:
+                case RenderDevice.Buffer.BUFFER_FRONT_LEFT:
+                case RenderDevice.Buffer.BUFFER_FRONT_RIGHT:
+                case RenderDevice.Buffer.BUFFER_LEFT:
+                case RenderDevice.Buffer.BUFFER_RIGHT:
+                case RenderDevice.Buffer.BUFFER_FRONT_AND_BACK:
+                    throw new NotSupportedException("G3D.Direct3D11: stereo draw buffers are not supported by the Direct3D 11 backend.");
+                default:
+                    throw new NotSupportedException("G3D.Direct3D11: the requested draw buffer is not supported by the Direct3D 11 backend.");
+            }
+            Direct3D11Framebuffer f;
+            if (framebuffers.TryGetValue(currentFramebuffer, out f))
+            {
+                applyRenderTargets(f);
+            }
+            else
+            {
+                context.OutputMerger.SetRenderTargets(activeDepthView, drawBufferIndex < 0 ? (RenderTargetView)null : renderTargetView);
+            }
         }
         public void SetColorWrite(bool enable) { colorWrite = enable; UpdateBlendState(blendSrc, blendDst, blendEquation); }
         public void SetAlphaWrite(bool enable) { alphaWrite = enable; UpdateBlendState(blendSrc, blendDst, blendEquation); }
@@ -1733,6 +2134,7 @@ namespace G3D.Direct3D11
         public void SetTextureMatrix(int textureUnit, Matrix4 matrix) { textureMatrix = matrix; }
         public void SetProjectionMatrix(Matrix4 matrix) { projection = matrix; }
         public void SetModelViewMatrix(Matrix4 matrix) { modelView = matrix; }
+        public void SetCameraToWorldMatrix(Matrix4 matrix) { cameraToWorld = matrix; }
         public void SetLight(int index, GLight light, bool enabled) { if (index >= 0 && index < lights.Length) { lights[index] = new GLight(light); lightEnabled[index] = enabled; } }
         public void SetAmbientLight(Color4 color) { ambient = color; }
         public void SetLightingEnabled(bool enabled) { lightingEnabled = enabled; }
@@ -1842,7 +2244,7 @@ namespace G3D.Direct3D11
             {
                 throw new InvalidOperationException("There is no active render target to read from.");
             }
-            Texture2D source = activeColorView.Resource as Texture2D;
+            Texture2D source = activeColorView.ResourceAs<Texture2D>();
             if (source == null)
             {
                 throw new NotSupportedException("G3D.Direct3D11: the active render target cannot be copied to the CPU.");
@@ -1864,6 +2266,7 @@ namespace G3D.Direct3D11
             {
                 context.CopyResource(staging, source);
                 DataBox box = context.MapSubresource(staging, 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None);
+                bool swapChannels = source.Description.Format == DxgiFormat.B8G8R8A8_UNorm;
                 try
                 {
                     for (int row = 0; row < height; ++row)
@@ -1871,6 +2274,16 @@ namespace G3D.Direct3D11
                         int sourceRow = source.Description.Height - 1 - (y + row);
                         IntPtr rowPointer = new IntPtr(box.DataPointer.ToInt64() + sourceRow * box.RowPitch + x * 4);
                         Marshal.Copy(rowPointer, data, row * width * 4, width * 4);
+                        if (swapChannels)
+                        {
+                            for (int i = 0; i < width; ++i)
+                            {
+                                int at = row * width * 4 + i * 4;
+                                byte blue = data[at];
+                                data[at] = data[at + 2];
+                                data[at + 2] = blue;
+                            }
+                        }
                     }
                 }
                 finally
@@ -1991,3 +2404,4 @@ namespace G3D.Direct3D11
         }
     }
 }
+

@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{7E1B2A10-0005-4C1A-9A10-000000000005}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>G3D.Tests</RootNamespace>
+    <AssemblyName>G3D.Tests</AssemblyName>
+    <TargetFrameworkVersion>v4.0</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <LangVersion>4</LangVersion>
+    <WarningLevel>4</WarningLevel>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+
+    <Compile Include="tAABox.cs" />
+    <Compile Include="tAABSPTree.cs" />
+    <Compile Include="tArray.cs" />
+    <Compile Include="tAtomicInt32.cs" />
+    <Compile Include="tBinaryIO.cs" />
+    <Compile Include="tCollisionDetection.cs" />
+    <Compile Include="tConvexPolyhedron.cs" />
+    <Compile Include="tCoreValueMath.cs" />
+    <Compile Include="tCoreUtilities.cs" />
+    <Compile Include="tCrypto.cs" />
+    <Compile Include="tDiscovery.cs" />
+    <Compile Include="tGChunk.cs" />
+    <Compile Include="tGImage.cs" />
+    <Compile Include="tGThread.cs" />
+    <Compile Include="tMatrix.cs" />
+    <Compile Include="tMatrix3.cs" />
+    <Compile Include="tMatrix3Advanced.cs" />
+    <Compile Include="tMeshAlg.cs" />
+    <Compile Include="tMeshAlgAdjacency.cs" />
+    <Compile Include="tMeshAlgTangentSpace.cs" />
+    <Compile Include="tMeshBuilder.cs" />
+    <Compile Include="tQuat.cs" />
+    <Compile Include="tQueue.cs" />
+    <Compile Include="tRandom.cs" />
+    <Compile Include="tReferenceCount.cs" />
+    <Compile Include="tReliableConduit.cs" />
+    <Compile Include="tSpline.cs" />
+    <Compile Include="tSystemMemcpy.cs" />
+    <Compile Include="tSystemMemset.cs" />
+    <Compile Include="tTable.cs" />
+    <Compile Include="tTextInput.cs" />
+    <Compile Include="tTextOutput.cs" />
+    <Compile Include="tVAR.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\G3D\G3D.csproj">
+      <Project>{7E1B2A10-0001-4C1A-9A10-000000000001}</Project>
+      <Name>G3D</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\src\G3D.Image.SystemDrawing\G3D.Image.SystemDrawing.csproj">
+      <Project>{7E1B2A10-0008-4C1A-9A10-000000000008}</Project>
+      <Name>G3D.Image.SystemDrawing</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\src\GLG3D\GLG3D.csproj">
+      <Project>{7E1B2A10-0002-4C1A-9A10-000000000002}</Project>
+      <Name>GLG3D</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\src\GLG3D.OpenGL\GLG3D.OpenGL.csproj">
+      <Project>{7E1B2A10-0003-4C1A-9A10-000000000003}</Project>
+      <Name>GLG3D.OpenGL</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

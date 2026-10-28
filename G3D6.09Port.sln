@@ -1,0 +1,68 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 2012
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "G3D6.09Port", "G3D6.09Port\G3D6.09Port.csproj", "{1F218D51-0D00-4C37-BA8C-426A5B17E5F1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "G3D", "src\G3D\G3D.csproj", "{7E1B2A10-0001-4C1A-9A10-000000000001}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GLG3D", "src\GLG3D\GLG3D.csproj", "{7E1B2A10-0002-4C1A-9A10-000000000002}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GLG3D.OpenGL", "src\GLG3D.OpenGL\GLG3D.OpenGL.csproj", "{7E1B2A10-0003-4C1A-9A10-000000000003}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GLG3D.Direct3D11", "src\GLG3D.Direct3D11\GLG3D.Direct3D11.csproj", "{7E1B2A10-0004-4C1A-9A10-000000000004}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "G3D.Tests", "tests\G3D.Tests\G3D.Tests.csproj", "{7E1B2A10-0005-4C1A-9A10-000000000005}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GLG3D.Tests", "tests\GLG3D.Tests\GLG3D.Tests.csproj", "{7E1B2A10-0006-4C1A-9A10-000000000006}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Collision_Demo", "demos\Collision_Demo\Collision_Demo.csproj", "{7E1B2A10-0007-4C1A-9A10-000000000007}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "G3D.Image.SystemDrawing", "src\G3D.Image.SystemDrawing\G3D.Image.SystemDrawing.csproj", "{7E1B2A10-0008-4C1A-9A10-000000000008}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1F218D51-0D00-4C37-BA8C-426A5B17E5F1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1F218D51-0D00-4C37-BA8C-426A5B17E5F1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1F218D51-0D00-4C37-BA8C-426A5B17E5F1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1F218D51-0D00-4C37-BA8C-426A5B17E5F1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7E1B2A10-0001-4C1A-9A10-000000000001}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7E1B2A10-0001-4C1A-9A10-000000000001}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7E1B2A10-0001-4C1A-9A10-000000000001}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7E1B2A10-0001-4C1A-9A10-000000000001}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7E1B2A10-0002-4C1A-9A10-000000000002}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7E1B2A10-0002-4C1A-9A10-000000000002}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7E1B2A10-0002-4C1A-9A10-000000000002}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7E1B2A10-0002-4C1A-9A10-000000000002}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7E1B2A10-0003-4C1A-9A10-000000000003}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7E1B2A10-0003-4C1A-9A10-000000000003}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7E1B2A10-0003-4C1A-9A10-000000000003}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7E1B2A10-0003-4C1A-9A10-000000000003}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7E1B2A10-0004-4C1A-9A10-000000000004}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7E1B2A10-0004-4C1A-9A10-000000000004}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7E1B2A10-0004-4C1A-9A10-000000000004}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7E1B2A10-0004-4C1A-9A10-000000000004}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7E1B2A10-0005-4C1A-9A10-000000000005}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7E1B2A10-0005-4C1A-9A10-000000000005}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7E1B2A10-0005-4C1A-9A10-000000000005}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7E1B2A10-0005-4C1A-9A10-000000000005}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7E1B2A10-0006-4C1A-9A10-000000000006}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7E1B2A10-0006-4C1A-9A10-000000000006}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7E1B2A10-0006-4C1A-9A10-000000000006}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7E1B2A10-0006-4C1A-9A10-000000000006}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7E1B2A10-0007-4C1A-9A10-000000000007}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7E1B2A10-0007-4C1A-9A10-000000000007}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7E1B2A10-0007-4C1A-9A10-000000000007}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7E1B2A10-0007-4C1A-9A10-000000000007}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7E1B2A10-0008-4C1A-9A10-000000000008}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7E1B2A10-0008-4C1A-9A10-000000000008}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7E1B2A10-0008-4C1A-9A10-000000000008}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7E1B2A10-0008-4C1A-9A10-000000000008}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

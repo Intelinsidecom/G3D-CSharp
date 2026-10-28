@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{7E1B2A10-0002-4C1A-9A10-000000000002}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>G3D</RootNamespace>
+    <AssemblyName>GLG3D</AssemblyName>
+    <TargetFrameworkVersion>v4.0</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <LangVersion>4</LangVersion>
+    <WarningLevel>4</WarningLevel>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+  </ItemGroup>
+<ItemGroup>
+    <Compile Include="BackendCaps.cs" />
+    <Compile Include="GLCaps.cs" />
+    <Compile Include="GraphicsBackendKind.cs" />
+    <Compile Include="GraphicsShaderLanguage.cs" />
+    <Compile Include="IGraphicsBackend.cs" />
+    <Compile Include="IGraphicsWindow.cs" />
+    <Compile Include="TextureFormat.cs" />
+    <Compile Include="DDSTexture.cs" />
+    <Compile Include="Texture.cs" />
+    <Compile Include="Framebuffer.cs" />
+    <Compile Include="Renderbuffer.cs" />
+    <Compile Include="Shader.cs" />
+    <Compile Include="ShaderProgram.cs" />
+    <Compile Include="GlslToHlslTranslator.cs" />
+    <Compile Include="GPUProgram.cs" />
+    <Compile Include="VertexProgram.cs" />
+    <Compile Include="PixelProgram.cs" />
+    <Compile Include="VAR.cs" />
+    <Compile Include="VARArea.cs" />
+    <Compile Include="RenderDevice.cs" />
+    <Compile Include="GWindow.cs" />
+<Compile Include="Milestone.cs" />
+  <Compile Include="VertexAndPixelShader.cs" />
+  <Compile Include="ObjectShader.cs" />
+  <Compile Include="GAppSettings.cs" />
+  <Compile Include="GApp.cs" />
+  <Compile Include="GApplet.cs" />
+  <Compile Include="ManualCameraController.cs" />
+  <Compile Include="UserInput.cs" />
+  <Compile Include="TextureManager.cs" />
+  <Compile Include="Draw.cs" />
+  <Compile Include="LightingParameters.cs" />
+  <Compile Include="Sky.cs" />
+  <Compile Include="PosedModel.cs" />
+    <Compile Include="IFSModel.cs" />
+    <Compile Include="MD2Model.cs" />
+<Compile Include="GFont.cs" />
+    <Compile Include="GModule.cs" />
+    <Compile Include="GMaterial.cs" />
+    <Compile Include="Shape.cs" />
+    <Compile Include="Tesselate.cs" />
+    <Compile Include="ShadowVolume.cs" />
+    <Compile Include="EdgeFeatures.cs" />
+</ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\G3D\G3D.csproj">
+      <Project>{7E1B2A10-0001-4C1A-9A10-000000000001}</Project>
+      <Name>G3D</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

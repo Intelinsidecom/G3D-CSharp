@@ -1,0 +1,117 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{7E1B2A10-0001-4C1A-9A10-000000000001}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>G3D</RootNamespace>
+    <AssemblyName>G3D</AssemblyName>
+    <TargetFrameworkVersion>v4.0</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <LangVersion>4</LangVersion>
+    <WarningLevel>4</WarningLevel>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="AABox.cs" />
+    <Compile Include="AssemblyInfo.cs" />
+
+    <Compile Include="AABSPTree.cs" />
+    <Compile Include="Array.cs" />
+    <Compile Include="AtomicInt32.cs" />
+    <Compile Include="BinaryFormat.cs" />
+    <Compile Include="BinaryInput.cs" />
+    <Compile Include="BinaryOutput.cs" />
+    <Compile Include="Box.cs" />
+    <Compile Include="Capsule.cs" />
+    <Compile Include="CollisionDetection.cs" />
+    <Compile Include="Color3.cs" />
+    <Compile Include="Color3uint8.cs" />
+    <Compile Include="Color4uint8.cs" />
+    <Compile Include="Color4.cs" />
+    <Compile Include="Cone.cs" />
+    <Compile Include="CoordinateFrame.cs" />
+    <Compile Include="Discovery.cs" />
+    <Compile Include="Crypto.cs" />
+    <Compile Include="Crypto_md5.cs" />
+    <Compile Include="ConvexPolyhedron.cs" />
+    <Compile Include="Cylinder.cs" />
+    <Compile Include="debug.cs" />
+    <Compile Include="debugAssert.cs" />
+    <Compile Include="debugPrintf.cs" />
+    <Compile Include="fileutils.cs" />
+    <Compile Include="format.cs" />
+    <Compile Include="G3DGameUnits.cs" />
+    <Compile Include="g3dmath.cs" />
+    <Compile Include="g3derror.cs" />
+    <Compile Include="GChunk.cs" />
+    <Compile Include="GEvent.cs" />
+    <Compile Include="GThread.cs" />
+    <Compile Include="GCamera.cs" />
+    <Compile Include="GImage.cs" />
+    <Compile Include="GImageBayer.cs" />
+    <Compile Include="GImageCoreCodec.cs" />
+    <Compile Include="GLight.cs" />
+    <Compile Include="Line.cs" />
+    <Compile Include="LineSegment.cs" />
+    <Compile Include="license.cs" />
+    <Compile Include="Log.cs" />
+    <Compile Include="Matrix3.cs" />
+    <Compile Include="Matrix4.cs" />
+    <Compile Include="MeshAlg.cs" />
+    <Compile Include="MeshAlgAdjacency.cs" />
+    <Compile Include="MeshAlgWeld.cs" />
+    <Compile Include="MeshBuilder.cs" />
+    <Compile Include="NetAddress.cs" />
+    <Compile Include="NetworkDevice.cs" />
+    <Compile Include="Plane.cs" />
+    <Compile Include="PhysicsFrame.cs" />
+    <Compile Include="platform.cs" />
+    <Compile Include="Prompt.cs" />
+    <Compile Include="Quat.cs" />
+    <Compile Include="Queue.cs" />
+    <Compile Include="Ray.cs" />
+    <Compile Include="ReferenceCount.cs" />
+    <Compile Include="Rect2D.cs" />
+    <Compile Include="RegistryUtil.cs" />
+    <Compile Include="Set.cs" />
+    <Compile Include="Spline.cs" />
+    <Compile Include="Sphere.cs" />
+    <Compile Include="stringutils.cs" />
+    <Compile Include="System.cs" />
+    <Compile Include="Table.cs" />
+    <Compile Include="TextInput.cs" />
+    <Compile Include="TextOutput.cs" />
+    <Compile Include="Stopwatch.cs" />
+    <Compile Include="Triangle.cs" />
+    <Compile Include="Vector2.cs" />
+    <Compile Include="Vector2int16.cs" />
+    <Compile Include="Vector3.cs" />
+    <Compile Include="Vector3int16.cs" />
+    <Compile Include="Vector4.cs" />
+    <Compile Include="VectorMath.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>
+
+
+

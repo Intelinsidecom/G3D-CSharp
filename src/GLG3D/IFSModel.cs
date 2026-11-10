@@ -322,9 +322,9 @@ namespace G3D
 	
             MeshAlg.computeNormals(geometry.vertexArray, faceArray, vertexArray, geometry.normalArray, faceNormalArray);
 
-            Box box;
-            Sphere sphere;
-            MeshAlg.computeBounds(geometry.vertexArray, out box, out sphere);
+            Box box = new Box();
+            Sphere sphere = new Sphere();
+            MeshAlg.computeBounds(geometry.vertexArray, ref box, ref sphere);
             boundingBox = box;
             boundingSphere = sphere;
 

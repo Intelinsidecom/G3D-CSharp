@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -50,7 +50,6 @@ namespace G3D.OpenGL
         {
             get { return GraphicsBackendKind.OpenGL; }
         }
-
         public string Description
         {
             get { return string.Format("{0} {1} {2}", caps.Vendor, caps.Renderer, caps.Version); }
@@ -77,6 +76,19 @@ namespace G3D.OpenGL
             caps.Renderer = GL.GetString(StringName.Renderer) ?? string.Empty;
             caps.Version = GL.GetString(StringName.Version) ?? string.Empty;
             caps.DriverVersion = GetDriverVersion();
+
+            // BindTexture routes every texture unit change through glActiveTexture,
+            // which is core in OpenGL 1.3.  When Windows falls back to the GDI
+            // software rasterer the entry point is unresolvable and the first call
+            // faults natively as an AccessViolationException, so the requirement is
+            // checked up front and reported with the version that was actually
+            // obtained.
+            if (!supportsCoreVersion(1, 3))
+            {
+                throw new NotSupportedException(
+                    "The OpenGL backend requires OpenGL 1.3 or later for glActiveTexture, but the context reports version \"" +
+                    caps.Version + "\" from renderer \"" + caps.Renderer + "\".");
+            }
             OpenGLCapabilities.Extensions.Clear();
             string extensionString = GL.GetString(StringName.Extensions);
             if (!string.IsNullOrEmpty(extensionString))
@@ -114,8 +126,26 @@ namespace G3D.OpenGL
             caps.ShaderLanguages = new List<GraphicsShaderLanguage>();
             caps.ShaderLanguages.Add(GraphicsShaderLanguage.GLSL);
             OpenGLCapabilities.initialize(caps.Version, caps.Vendor, caps.Renderer, caps.DriverVersion, caps.MaxTextureUnits, caps.MaxTextures, caps.MaxTextureCoords);
-            OpenGLCapabilities.BugRedBlueMipmapSwap = checkRedBlueMipmapSwap();
-            checkCubeMapBugs();
+
+            // The hardware-bug probes call GL 1.3+ entry points (glActiveTexture,
+            // multi-texture cube-map texgen).  On a machine that has fallen back
+            // to the software rasterizer - which reports OpenGL 1.1.0 - those
+            // entry points do not exist, so the probes would fault natively
+            // instead of returning a result.  A software context has none of the
+            // driver bugs being probed for, so the safe documented fallback is
+            // "no bug".
+            bool probesAvailable = supportsCoreVersion(1, 3);
+            if (!probesAvailable)
+            {
+                OpenGLCapabilities.BugRedBlueMipmapSwap = false;
+                OpenGLCapabilities.BugMultiTexCoord3fvARB = false;
+                OpenGLCapabilities.BugNormalMapTexGen = false;
+            }
+            else
+            {
+                OpenGLCapabilities.BugRedBlueMipmapSwap = checkRedBlueMipmapSwap();
+                checkCubeMapBugs();
+            }
             OpenGLCapabilities.BugMipmapGeneration = SupportsExtension("GL_SGIS_generate_mipmap") &&
                 (caps.Renderer.StartsWith("MOBILITY RADEON 90", StringComparison.Ordinal) ||
                  caps.Renderer.StartsWith("MOBILITY RADEON 57", StringComparison.Ordinal) ||
@@ -187,7 +217,16 @@ namespace G3D.OpenGL
         public void Resize(int width, int height)
         {
             if (window == null) return;
-            window.MakeCurrent();
+            // The host window may already be closed; a resize that arrives
+            // after disposal has nothing to apply.
+            try
+            {
+                window.MakeCurrent();
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
             GL.Viewport(0, 0, width, height);
         }
 
@@ -806,6 +845,69 @@ namespace G3D.OpenGL
             BindTexture(textureUnit, textureID, dimension);
         }
 
+        // Abstraction over NVIDIA/ARB extensions
+        public int GenAssemblyProgram(int unit)
+        {
+            int id;
+            GL.Arb.GenProgram(1, out id);
+            return id;
+        }
+
+        public void DeleteAssemblyProgram(int program)
+        {
+            if (program > 0)
+            {
+                GL.Arb.DeleteProgram(program);
+            }
+        }
+
+        public void BindAssemblyProgram(int unit, int program)
+        {
+            GL.Arb.BindProgram(toAssemblyProgramTarget(unit), program);
+        }
+
+        public void LoadAssemblyProgram(int unit, int program, string code)
+        {
+            byte[] bytes = global::System.Text.Encoding.ASCII.GetBytes(code);
+            GL.Arb.ProgramString(toAssemblyProgramTarget(unit), (All)0x8875, bytes.Length, bytes);
+        }
+
+        public void SetAssemblyProgramLocalParameter(int unit, int slot, Vector4 value)
+        {
+            GL.Arb.ProgramLocalParameter4(toAssemblyProgramTarget(unit), slot, value.x, value.y, value.z, value.w);
+        }
+
+        public void GetAssemblyProgramError(int unit, out int pos, out string msg)
+        {
+            pos = GL.GetInteger((GetPName)0x864B);
+            msg = GL.GetString((StringName)0x8874) ?? "";
+        }
+
+        public void EnableAssemblyProgram(int unit, bool enabled)
+        {
+            if (enabled)
+            {
+                GL.Enable((EnableCap)unit);
+            }
+            else
+            {
+                GL.Disable((EnableCap)unit);
+            }
+        }
+
+        private static AssemblyProgramTargetArb toAssemblyProgramTarget(int unit)
+        {
+            if (unit == 0x8620)
+            {
+                return AssemblyProgramTargetArb.VertexProgram;
+            }
+            if (unit == 0x8804)
+            {
+                return AssemblyProgramTargetArb.FragmentProgram;
+            }
+            throw new ArgumentException("Unsupported assembly program unit 0x" + unit.ToString("X4") + ".");
+        }
+
         // Vertex Array / VBO management
         public int CreateVertexArray()
         {
@@ -840,7 +942,15 @@ namespace G3D.OpenGL
         {
             if (bufferID > 0)
             {
-                GL.DeleteBuffer(bufferID);
+                // The GL context lives as long as the host control; once the
+                // window is closed and the control disposed the entry points
+                // still resolve but fault.  Deleting an already-orphaned buffer
+                // name cannot be observed, so the call is skipped, matching the
+                // guard OpenGLWindow.Present already applies.
+                if (window != null && !window.Disposed)
+                {
+                    GL.DeleteBuffer(bufferID);
+                }
             }
         }
 
@@ -1078,6 +1188,12 @@ namespace G3D.OpenGL
         private readonly Dictionary<VAR, int> varBuffers = new Dictionary<VAR, int>();
         private readonly Dictionary<VAR, int> varBufferVersions = new Dictionary<VAR, int>();
 
+        public static int bufferDataCalls;
+
+        private VAR clientIndexVAR;
+        private int clientIndexVARCapacity;
+        private uint[] clientIndexValues;
+
         private int getVARBuffer(VAR varray)
         {
             int bufferID;
@@ -1091,6 +1207,7 @@ namespace G3D.OpenGL
             int version = varray.getDataVersion();
             if (varBufferVersions[varray] != version)
             {
+                global::System.Threading.Interlocked.Increment(ref bufferDataCalls);
                 byte[] data = varray.getData();
                 if (data == null)
                 {
@@ -1124,12 +1241,88 @@ namespace G3D.OpenGL
             }
 
             // Legacy fixed-function path: client-state arrays.
+            bool hasNormals;
+            bool hasColors;
+            bool hasTexCoords;
+            bindFixedFunctionArrays(vertexArray, normalArray, colorArray, texCoordArray, out hasNormals, out hasColors, out hasTexCoords);
+
+            if (indexArray != null)
+            {
+                int indexBuffer = getVARBuffer(indexArray);
+                GL.BindBuffer(BufferTarget.ElementArrayBuffer, indexBuffer);
+                GL.DrawElements(pt, numIndices, drawElementsTypeFor(indexArray.getFormat()), IntPtr.Zero);
+            }
+            else
+            {
+                GL.DrawArrays(pt, 0, numIndices);
+            }
+
+            disableFixedFunctionArrays(hasNormals, hasColors, hasTexCoords);
+        }
+
+        /**
+          Draws indexed geometry with client-side indices supplied by the
+          caller.  The original RenderDevice passed the caller's index array
+          straight to glDrawElements instead of staging it through a VAR, so
+          repeating the same indices cost neither a copy nor an upload.
+        */
+        public void DrawVAR(RenderDevice.Primitive primitive, int numIndices, VAR vertexArray, VAR normalArray, VAR colorArray, VAR texCoordArray, uint[] index)
+        {
+            if (vertexArray == null || numIndices <= 0 || index == null)
+            {
+                return;
+            }
+
+            PrimitiveType pt = ConvertPrimitive(primitive);
+
+            if (currentProgram != 0)
+            {
+                // The programmable path draws from a bound element buffer, so the
+                // client indices are staged into the immediate index VAR.
+                VAR staged = getClientIndexVAR(index, numIndices);
+                DrawVARWithProgram(primitive, numIndices, pt, vertexArray, normalArray, colorArray, texCoordArray, staged);
+                return;
+            }
+
+            bool hasNormals;
+            bool hasColors;
+            bool hasTexCoords;
+            bindFixedFunctionArrays(vertexArray, normalArray, colorArray, texCoordArray, out hasNormals, out hasColors, out hasTexCoords);
+
+            if (numIndices > index.Length)
+            {
+                numIndices = index.Length;
+            }
+            GL.DrawElements(pt, numIndices, DrawElementsType.UnsignedInt, index);
+
+            disableFixedFunctionArrays(hasNormals, hasColors, hasTexCoords);
+        }
+
+        private VAR getClientIndexVAR(uint[] index, int numIndices)
+        {
+            if (clientIndexValues == null || clientIndexValues.Length < numIndices)
+            {
+                clientIndexValues = new uint[numIndices];
+            }
+            Array.Copy(index, clientIndexValues, numIndices);
+            if (clientIndexVAR == null || clientIndexVARCapacity < numIndices)
+            {
+                clientIndexVARCapacity = numIndices;
+                clientIndexVAR = VAR.create(VAR.Type.INDEX, clientIndexVARCapacity, VAR.Usage.STREAM);
+            }
+            clientIndexVAR.setData(clientIndexValues);
+            return clientIndexVAR;
+        }
+
+        private void bindFixedFunctionArrays(VAR vertexArray, VAR normalArray, VAR colorArray, VAR texCoordArray,
+                                             out bool hasNormals, out bool hasColors, out bool hasTexCoords)
+        {
             int vertexBuffer = getVARBuffer(vertexArray);
             GL.BindBuffer(BufferTarget.ArrayBuffer, vertexBuffer);
             GL.VertexPointer(3, vertexPointerTypeFor(vertexArray.getFormat()), vertexArray.getStride(), IntPtr.Zero);
             GL.EnableClientState(ArrayCap.VertexArray);
 
-            bool hasNormals = (normalArray != null);
+            hasNormals = (normalArray != null);
             if (hasNormals)
             {
                 int normalBuffer = getVARBuffer(normalArray);
@@ -1138,7 +1331,7 @@ namespace G3D.OpenGL
                 GL.EnableClientState(ArrayCap.NormalArray);
             }
 
-            bool hasColors = (colorArray != null);
+            hasColors = (colorArray != null);
             if (hasColors)
             {
                 int colorBuffer = getVARBuffer(colorArray);
@@ -1152,7 +1345,7 @@ namespace G3D.OpenGL
                 GL.EnableClientState(ArrayCap.ColorArray);
             }
 
-            bool hasTexCoords = (texCoordArray != null);
+            hasTexCoords = (texCoordArray != null);
             if (hasTexCoords)
             {
                 int texCoordBuffer = getVARBuffer(texCoordArray);
@@ -1165,18 +1358,10 @@ namespace G3D.OpenGL
                 GL.TexCoordPointer(texCoordComponents, texCoordPointerTypeFor(texCoordArray.getFormat()), texCoordArray.getStride(), IntPtr.Zero);
                 GL.EnableClientState(ArrayCap.TextureCoordArray);
             }
+        }
 
-            if (indexArray != null)
-            {
-                int indexBuffer = getVARBuffer(indexArray);
-                GL.BindBuffer(BufferTarget.ElementArrayBuffer, indexBuffer);
-                GL.DrawElements(pt, numIndices, drawElementsTypeFor(indexArray.getFormat()), IntPtr.Zero);
-            }
-            else
-            {
-                GL.DrawArrays(pt, 0, numIndices);
-            }
-
+        private void disableFixedFunctionArrays(bool hasNormals, bool hasColors, bool hasTexCoords)
+        {
             GL.DisableClientState(ArrayCap.VertexArray);
             if (hasNormals)
             {

@@ -907,7 +907,12 @@ namespace G3D
                 Debug.debugAssert(receivePort != 0);
                 if (!nd.bind(sock, new NetAddress(0, receivePort)))
                 {
+                    // The socket could not be bound (the port is in use).  Leave
+                    // ok() false so callers detect this, but set the MTU so a
+                    // later send on the dead conduit reports the real reason
+                    // ("socket not ok") instead of a nonsensical negative MTU.
                     sock = null;
+                    MTU = 1000;
                     return;
                 }
             }
@@ -948,6 +953,8 @@ namespace G3D
 
         private void serializeMessage(NetMessage m, BinaryOutput b)
         {
+            checkSocketUsable();
+
             if (m != null)
             {
                 Debug.debugAssert(m.type() != 0);
@@ -972,12 +979,28 @@ namespace G3D
             }
         }
 
+        /**
+          When the socket could not be created or bound, a send would otherwise
+          fail with a confusing size assertion (the MTU has no meaning on a dead
+          socket).  Report the real reason instead.
+        */
+        private void checkSocketUsable()
+        {
+            if (sock == null)
+            {
+                throw new InvalidOperationException(
+                    "Cannot send on a LightweightConduit whose socket could not be created or bound; the port is probably already in use.");
+            }
+        }
+
         private void serializeMessage<T>(uint type, T m, BinaryOutput b)
         {
             Debug.debugAssert(type != 0);
             b.writeUInt32(type);
             NetSerialization.serialize(m, b);
             b.writeUInt32(1);
+
+            checkSocketUsable();
 
             Debug.debugAssertM(b.size() < MTU,
                         Format.format("This LightweightConduit is limited to messages of "

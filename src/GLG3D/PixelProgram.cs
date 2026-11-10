@@ -83,7 +83,17 @@ namespace G3D
         {
             PixelProgram program = new PixelProgram(name, filename);
             string defines = settings == null ? "" : settings.defines;
-            program.compileProgram(GraphicsShaderLanguage.GLSL, DefaultVertexSource, defines + source);
+            string code = defines + source;
+
+            int assemblyUnit;
+            GPUProgram.Extension assemblyExtension;
+            if (isAssemblyCode(code, out assemblyUnit, out assemblyExtension))
+            {
+                program.loadAssemblyProgram(code);
+                return program;
+            }
+
+            program.compileProgram(GraphicsShaderLanguage.GLSL, DefaultVertexSource, code);
             return program;
         }
     }

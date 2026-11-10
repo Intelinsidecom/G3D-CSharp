@@ -2061,15 +2061,125 @@ namespace G3D
             // they will hit.
 
             // Closest point on the triangle to the sphere intersection with the plane.
-            Vector3[] triangleVertices = new Vector3[] { triangle.vertex(0), triangle.vertex(1), triangle.vertex(2) };
-            Vector3[] triangleEdgeDirection = new Vector3[] { triangle.edgeDirection(0), triangle.edgeDirection(1), triangle.edgeDirection(2) };
-            double[] triangleEdgeMagnitude = new double[] { triangle.edgeMagnitude(0), triangle.edgeMagnitude(1), triangle.edgeMagnitude(2) };
-            Vector3 point = closestPointToTrianglePerimeter(triangleVertices, triangleEdgeDirection, triangleEdgeMagnitude, outLocation);
+            // Use stack-allocated local variables instead of heap allocations
+            Vector3 v0 = triangle.vertex(0);
+            Vector3 v1 = triangle.vertex(1);
+            Vector3 v2 = triangle.vertex(2);
+            Vector3 e0 = triangle.edgeDirection(0);
+            Vector3 e1 = triangle.edgeDirection(1);
+            Vector3 e2 = triangle.edgeDirection(2);
+            double m0 = triangle.edgeMagnitude(0);
+            double m1 = triangle.edgeMagnitude(1);
+            double m2 = triangle.edgeMagnitude(2);
+
+            // Closest point on each segment
+            Vector3 r0 = closestPointOnLineSegment(v0, v1, e0, (float)m0, outLocation);
+            Vector3 r1 = closestPointOnLineSegment(v1, v2, e1, (float)m1, outLocation);
+            Vector3 r2 = closestPointOnLineSegment(v2, v0, e2, (float)m2, outLocation);
+
+            // Distance squared
+            double d0 = (r0 - outLocation).squaredMagnitude();
+            double d1 = (r1 - outLocation).squaredMagnitude();
+            double d2 = (r2 - outLocation).squaredMagnitude();
+
+            Vector3 point;
+            if (d0 < d1)
+            {
+                if (d0 < d2)
+                {
+                    point = r0;
+                }
+                else
+                {
+                    point = r2;
+                }
+            }
+            else
+            {
+                if (d1 < d2)
+                {
+                    point = r1;
+                }
+                else
+                {
+                    point = r2;
+                }
+            }
 
             double t = collisionTimeForMovingPointFixedSphere(point, -velocity, sphere, out dummy, out dummy);
 
             // The collision occured at the point, if it occured.  The normal was the plane normal,
             // computed above.
+
+            return (float)t;
+        }
+
+        /// <summary>
+        /// Optimized overload that accepts pre-computed triangle data to avoid heap allocations.
+        /// Call this from performance-critical paths with pre-computed data.
+        /// </summary>
+        public static float collisionTimeForMovingSphereFixedTriangle(
+            Sphere sphere,
+            Vector3 velocity,
+            Vector3 v0, Vector3 v1, Vector3 v2,
+            Vector3 normal,
+            Vector3 edgeDir0, Vector3 edgeDir1, Vector3 edgeDir2,
+            double edgeMag0, double edgeMag1, double edgeMag2,
+            Vector3.Axis primaryAxis,
+            out Vector3 outLocation,
+            out Vector3 outNormal)
+        {
+            Vector3 dummy;
+
+            outNormal = normal;
+            Plane plane = new Plane(v0, v1, v2);
+            float time = collisionTimeForMovingSphereFixedPlane(sphere, velocity, plane, out outLocation, out dummy);
+
+            if (time == g3dmath.inf())
+            {
+                return time;
+            }
+
+            if (isPointInsideTriangle(v0, v1, v2, normal, outLocation, primaryAxis))
+            {
+                return time;
+            }
+
+            // Closest point on each segment - inline from closestPointToTrianglePerimeter
+            Vector3 r0 = closestPointOnLineSegment(v0, v1, edgeDir0, (float)edgeMag0, outLocation);
+            Vector3 r1 = closestPointOnLineSegment(v1, v2, edgeDir1, (float)edgeMag1, outLocation);
+            Vector3 r2 = closestPointOnLineSegment(v2, v0, edgeDir2, (float)edgeMag2, outLocation);
+
+            // Distance squared
+            double d0 = (r0 - outLocation).squaredMagnitude();
+            double d1 = (r1 - outLocation).squaredMagnitude();
+            double d2 = (r2 - outLocation).squaredMagnitude();
+
+            Vector3 point;
+            if (d0 < d1)
+            {
+                if (d0 < d2)
+                {
+                    point = r0;
+                }
+                else
+                {
+                    point = r2;
+                }
+            }
+            else
+            {
+                if (d1 < d2)
+                {
+                    point = r1;
+                }
+                else
+                {
+                    point = r2;
+                }
+            }
+
+            double t = collisionTimeForMovingPointFixedSphere(point, -velocity, sphere, out dummy, out dummy);
 
             return (float)t;
         }

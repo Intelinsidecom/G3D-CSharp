@@ -48,10 +48,8 @@ namespace G3D.Direct3D11
             result.m21 = matrix.m21 * 0.5f + matrix.m31 * 0.5f;
             result.m22 = matrix.m22 * 0.5f + matrix.m32 * 0.5f;
             result.m23 = matrix.m23 * 0.5f + matrix.m33 * 0.5f;
-            result.m30 = matrix.m20;
-            result.m31 = matrix.m21;
-            result.m32 = matrix.m22;
-            result.m33 = matrix.m23;
+            // Row 3 (W row) must remain unchanged for correct perspective divide.
+            // Standard OpenGL projection has row 3 = [0, 0, -1, 0].
             return result;
         }
 

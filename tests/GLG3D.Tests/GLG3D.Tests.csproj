@@ -68,6 +68,10 @@
       <Project>{7E1B2A10-0004-4C1A-9A10-000000000004}</Project>
       <Name>GLG3D.Direct3D11</Name>
     </ProjectReference>
+    <ProjectReference Include="..\..\src\G3D.Image.SystemDrawing\G3D.Image.SystemDrawing.csproj">
+      <Project>{7E1B2A10-0008-4C1A-9A10-000000000008}</Project>
+      <Name>G3D.Image.SystemDrawing</Name>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

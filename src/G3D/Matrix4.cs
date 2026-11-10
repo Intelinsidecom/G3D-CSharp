@@ -32,42 +32,37 @@ namespace G3D
         private float subDeterminant(int excludeRow, int excludeCol)
         {
             // Compute non-excluded row and column indices
-            int[] row = new int[3];
-            int[] col = new int[3];
+            int r0, r1, r2;
+            int c0, c1, c2;
 
-            for (int i = 0; i < 3; ++i)
-            {
-                row[i] = i;
-                col[i] = i;
+            if (excludeRow == 0) { r0 = 1; r1 = 2; r2 = 3; }
+            else if (excludeRow == 1) { r0 = 0; r1 = 2; r2 = 3; }
+            else if (excludeRow == 2) { r0 = 0; r1 = 1; r2 = 3; }
+            else { r0 = 0; r1 = 1; r2 = 2; }
 
-                if (i >= excludeRow)
-                {
-                    ++row[i];
-                }
-                if (i >= excludeCol)
-                {
-                    ++col[i];
-                }
-            }
+            if (excludeCol == 0) { c0 = 1; c1 = 2; c2 = 3; }
+            else if (excludeCol == 1) { c0 = 0; c1 = 2; c2 = 3; }
+            else if (excludeCol == 2) { c0 = 0; c1 = 1; c2 = 3; }
+            else { c0 = 0; c1 = 1; c2 = 2; }
 
             // Compute the first row of cofactors
             float cofactor00 =
-              elt(row[1], col[1]) * elt(row[2], col[2]) -
-              elt(row[1], col[2]) * elt(row[2], col[1]);
+              elt(r1, c1) * elt(r2, c2) -
+              elt(r1, c2) * elt(r2, c1);
 
             float cofactor10 =
-              elt(row[1], col[2]) * elt(row[2], col[0]) -
-              elt(row[1], col[0]) * elt(row[2], col[2]);
+              elt(r1, c2) * elt(r2, c0) -
+              elt(r1, c0) * elt(r2, c2);
 
             float cofactor20 =
-              elt(row[1], col[0]) * elt(row[2], col[1]) -
-              elt(row[1], col[1]) * elt(row[2], col[0]);
+              elt(r1, c0) * elt(r2, c1) -
+              elt(r1, c1) * elt(r2, c0);
 
             // Product of the first row and the cofactors along the first row
             return
-              elt(row[0], col[0]) * cofactor00 +
-              elt(row[0], col[1]) * cofactor10 +
-              elt(row[0], col[2]) * cofactor20;
+              elt(r0, c0) * cofactor00 +
+              elt(r0, c1) * cofactor10 +
+              elt(r0, c2) * cofactor20;
         }
 
         public Matrix4(

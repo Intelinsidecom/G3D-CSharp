@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{7E1B2A10-000F-4C1A-9A10-00000000000F}</ProjectGuid>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>Network_Demo</RootNamespace>
+    <AssemblyName>Network_Demo</AssemblyName>
+    <TargetFrameworkVersion>v4.0</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <LangVersion>4</LangVersion>
+    <WarningLevel>4</WarningLevel>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup>
+    <StartupObject />
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="OpenTK">
+      <HintPath>..\..\lib\OpenTK.dll</HintPath>
+    </Reference>
+    <Reference Include="OpenTK.GLControl">
+      <HintPath>..\..\lib\OpenTK.GLControl.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="ServerAd.cs" />
+    <Compile Include="Pose.cs" />
+    <Compile Include="Model.cs" />
+    <Compile Include="Controls.cs" />
+    <Compile Include="Entity.cs" />
+    <Compile Include="messages.cs" />
+    <Compile Include="Server.cs" />
+    <Compile Include="Client.cs" />
+    <Compile Include="Browse.cs" />
+    <Compile Include="App.cs" />
+    <Compile Include="SelfTest.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\G3D\G3D.csproj">
+      <Project>{7E1B2A10-0001-4C1A-9A10-000000000001}</Project>
+      <Name>G3D</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\src\G3D.Image.SystemDrawing\G3D.Image.SystemDrawing.csproj">
+      <Project>{7E1B2A10-0008-4C1A-9A10-000000000008}</Project>
+      <Name>G3D.Image.SystemDrawing</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\src\GLG3D\GLG3D.csproj">
+      <Project>{7E1B2A10-0002-4C1A-9A10-000000000002}</Project>
+      <Name>GLG3D</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\src\GLG3D.OpenGL\GLG3D.OpenGL.csproj">
+      <Project>{7E1B2A10-0003-4C1A-9A10-000000000003}</Project>
+      <Name>GLG3D.OpenGL</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\src\GLG3D.Direct3D11\GLG3D.Direct3D11.csproj">
+      <Project>{7E1B2A10-0004-4C1A-9A10-000000000004}</Project>
+      <Name>GLG3D.Direct3D11</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

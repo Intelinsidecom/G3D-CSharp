@@ -196,7 +196,7 @@ namespace G3D
             // Decompose the quaternion into an angle and an axis.
 
             axis = new Vector3(x, y, z);
-            angle = 2 * Math.Acos(w);
+            angle = (float)(2 * Math.Acos((double)w));
 
             float len = (float)Math.Sqrt(1.0f - w * w);
 

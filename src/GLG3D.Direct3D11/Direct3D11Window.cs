@@ -7,9 +7,101 @@ namespace G3D.Direct3D11
     {
         private readonly D3D11Control control;
 
+        public event Action<GEvent> InputEvent;
+
         public Direct3D11Window()
         {
             control = new D3D11Control();
+            control.KeyDown += onKeyDown;
+            control.KeyUp += onKeyUp;
+            control.MouseDown += onMouseDown;
+            control.MouseUp += onMouseUp;
+            control.MouseMove += onMouseMove;
+            control.MouseWheel += onMouseWheel;
+        }
+
+        private void raiseInputEvent(GEvent e)
+        {
+            Action<GEvent> handler = InputEvent;
+            if (handler != null)
+            {
+                handler(e);
+            }
+        }
+
+        /**
+          WinForms reports virtual-key codes; UserInput expects the SDL 1.2
+          codes the original used, which match ASCII for the printable keys.
+        */
+        private static int translateKey(Keys key, bool shiftDown)
+        {
+            Keys code = key & Keys.KeyCode;
+            if (code >= Keys.A && code <= Keys.Z)
+            {
+                int letter = (int)code;
+                return shiftDown ? letter : letter + 32;
+            }
+            return (int)code;
+        }
+
+        private static int translateMouseButton(MouseButtons button)
+        {
+            switch (button)
+            {
+                case MouseButtons.Left: return 1;
+                case MouseButtons.Middle: return 2;
+                case MouseButtons.Right: return 3;
+                case MouseButtons.XButton1: return 4;
+                case MouseButtons.XButton2: return 5;
+                default: return 0;
+            }
+        }
+
+        private void onKeyDown(object sender, KeyEventArgs e)
+        {
+            GEvent evt = new GEvent(GEventType.KEY_DOWN);
+            evt.key = translateKey(e.KeyCode, e.Shift);
+            raiseInputEvent(evt);
+        }
+
+        private void onKeyUp(object sender, KeyEventArgs e)
+        {
+            GEvent evt = new GEvent(GEventType.KEY_UP);
+            evt.key = translateKey(e.KeyCode, e.Shift);
+            raiseInputEvent(evt);
+        }
+
+        private void onMouseDown(object sender, MouseEventArgs e)
+        {
+            GEvent evt = new GEvent(GEventType.MOUSE_DOWN);
+            evt.mouseButton = translateMouseButton(e.Button);
+            evt.mouseX = e.X;
+            evt.mouseY = e.Y;
+            raiseInputEvent(evt);
+        }
+
+        private void onMouseUp(object sender, MouseEventArgs e)
+        {
+            GEvent evt = new GEvent(GEventType.MOUSE_UP);
+            evt.mouseButton = translateMouseButton(e.Button);
+            evt.mouseX = e.X;
+            evt.mouseY = e.Y;
+            raiseInputEvent(evt);
+        }
+
+        private void onMouseMove(object sender, MouseEventArgs e)
+        {
+            GEvent evt = new GEvent(GEventType.MOUSE_MOVE);
+            evt.mouseX = e.X;
+            evt.mouseY = e.Y;
+            raiseInputEvent(evt);
+        }
+
+        private void onMouseWheel(object sender, MouseEventArgs e)
+        {
+            GEvent evt = new GEvent(GEventType.MOUSE_WHEEL);
+            evt.wheelDelta = e.Delta;
+            raiseInputEvent(evt);
         }
 
         public Control Control

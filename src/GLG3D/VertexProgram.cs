@@ -90,7 +90,17 @@ namespace G3D
         {
             VertexProgram program = new VertexProgram(name, filename);
             string defines = settings == null ? "" : settings.defines;
-            program.compileProgram(GraphicsShaderLanguage.GLSL, defines + source, DefaultPixelSource);
+            string code = defines + source;
+
+            int assemblyUnit;
+            GPUProgram.Extension assemblyExtension;
+            if (isAssemblyCode(code, out assemblyUnit, out assemblyExtension))
+            {
+                program.loadAssemblyProgram(code);
+                return program;
+            }
+
+            program.compileProgram(GraphicsShaderLanguage.GLSL, code, DefaultPixelSource);
             return program;
         }
     }

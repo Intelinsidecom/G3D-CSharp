@@ -344,13 +344,9 @@ namespace G3D
 
         public Color3 unitCross(Color3 rkVector)
         {
-            Color3 c = cross(rkVector);
-            float m = length() * rkVector.length();
-            if (m > 0.0f)
-            {
-                return c / m;
-            }
-            return Color3.zero();
+            Color3 kCross = cross(rkVector);
+            kCross.unitize(1e-06f);
+            return kCross;
         }
 
         public bool fuzzyEq(Color3 other)

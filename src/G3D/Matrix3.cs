@@ -354,17 +354,29 @@ namespace G3D
 
         public static Matrix3 operator *(float fScalar, Matrix3 m)
         {
-            return m * fScalar;
+            // The C++ operator* (float, Matrix3) forwards to the double overload.
+            return (double)fScalar * m;
         }
 
         public static Matrix3 operator *(double fScalar, Matrix3 m)
         {
-            return m * (float)fScalar;
+            Matrix3 kProd = new Matrix3();
+            for (int iRow = 0; iRow < 3; iRow++)
+            {
+                for (int iCol = 0; iCol < 3; iCol++)
+                {
+                    // The C++ operator* (double, Matrix3) evaluates the product
+                    // in double precision and assigns to the float element.
+                    kProd.setElt(iRow, iCol, (float)(fScalar * m.elt(iRow, iCol)));
+                }
+            }
+            return kProd;
         }
 
         public static Matrix3 operator *(int fScalar, Matrix3 m)
         {
-            return m * (float)fScalar;
+            // The C++ operator* (int, Matrix3) forwards to the double overload.
+            return (double)fScalar * m;
         }
 
         public Matrix3 transpose()
@@ -1579,52 +1591,30 @@ namespace G3D
 
         public bool toEulerAnglesZXY(out float rfZAngle, out float rfXAngle, out float rfYAngle)
         {
-            // The original C++ uses column-major storage (elt[col][row]) but the Euler
-            // formulas in the comment assume row-major. The C++ implementation has a
-            // parameter-order bug: it returns (X, Y, Z) in the slots labeled (Z, X, Y).
-            // This C# port uses row-major storage (elt[row][col]) and must replicate
-            // the C++ buggy behavior to pass the ported test.
-            //
-            // Correct row-major formula for ZXY (Z first, then X, then Y):
-            //   Z = atan2(-m[0][1], m[1][1])
-            //   X = asin(m[2][1])
-            //   Y = atan2(-m[2][0], m[2][2])
-            // But the C++ test expects (X, Y, Z) in the (rfZAngle, rfXAngle, rfYAngle) slots.
-            // So we cyclically permute: rfZAngle=X, rfXAngle=Y, rfYAngle=Z.
             if (elt(2, 1) < 1.0f)
             {
                 if (elt(2, 1) > -1.0f)
                 {
-                    float zAngle = (float)g3dmath.aTan2(-elt(0, 1), elt(1, 1));
-                    float xAngle = (float)g3dmath.aSin(elt(2, 1));
-                    float yAngle = (float)g3dmath.aTan2(-elt(2, 0), elt(2, 2));
-                    // Permute to match C++ buggy parameter order: (X, Y, Z) -> (Z, X, Y) slots
-                    rfZAngle = xAngle;
-                    rfXAngle = yAngle;
-                    rfYAngle = zAngle;
+                    rfZAngle = (float)g3dmath.aTan2(-elt(0, 1), elt(1, 1));
+                    rfXAngle = (float)g3dmath.aSin(elt(2, 1));
+                    rfYAngle = (float)g3dmath.aTan2(-elt(2, 0), elt(2, 2));
                     return true;
                 }
                 else
                 {
-                    // Gimbal lock at -90 degrees
-                    float zAngle = -(float)g3dmath.aTan2(elt(0, 2), elt(0, 0));
-                    float xAngle = -(float)g3dmath.G3D_HALF_PI;
-                    float yAngle = 0.0f;
-                    rfZAngle = xAngle;
-                    rfXAngle = yAngle;
-                    rfYAngle = zAngle;
+                    // WARNING.  Not unique.  ZA - YA = -atan(r02,r00)
+                    rfZAngle = -(float)g3dmath.aTan2(elt(0, 2), elt(0, 0));
+                    rfXAngle = -(float)g3dmath.G3D_HALF_PI;
+                    rfYAngle = 0.0f;
                     return false;
                 }
             }
             else
             {
-                // Gimbal lock at +90 degrees
-                float zAngle = (float)g3dmath.aTan2(elt(0, 2), elt(0, 0));
-                float xAngle = (float)g3dmath.G3D_HALF_PI;
-                float yAngle = 0.0f;
-                rfZAngle = xAngle;
-                rfXAngle = yAngle;
-                rfYAngle = zAngle;
+                // WARNING.  Not unique.  ZA + YA = atan2(r02,r00)
+                rfZAngle = (float)g3dmath.aTan2(elt(0, 2), elt(0, 0));
+                rfXAngle = (float)g3dmath.G3D_HALF_PI;
+                rfYAngle = 0.0f;
                 return false;
             }
         }

@@ -49,6 +49,7 @@
     <Compile Include="tGImage.cs" />
     <Compile Include="tGThread.cs" />
     <Compile Include="tMatrix.cs" />
+    <Compile Include="tBigInt.cs" />
     <Compile Include="tMatrix3.cs" />
     <Compile Include="tMatrix3Advanced.cs" />
     <Compile Include="tMeshAlg.cs" />

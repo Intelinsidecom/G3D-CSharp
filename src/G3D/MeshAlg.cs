@@ -1,4 +1,4 @@
-﻿/**
+/**
  @file MeshAlg.h
 
  Indexed Mesh algorithms.
@@ -896,7 +896,7 @@ namespace G3D
           @cite The bounding sphere uses the method from J. Ritter. An effcient bounding sphere. In Andrew S. Glassner, editor, Graphics Gems. Academic Press, Boston, MA, 1990.
 
         */
-        public static void computeBounds(Array<Vector3> vertex, out Box box, out Sphere sphere)
+        public static void computeBounds(Array<Vector3> vertex, ref Box box, ref Sphere sphere)
         {
             Vector3 xmin, xmax, ymin, ymax, zmin, zmax;
 
@@ -979,8 +979,8 @@ namespace G3D
             // calc initial center
             Vector3 center = (dia1 + dia2) / 2.0f;
 
-            // calculate initial radius^2 and radius 
-            Vector3 d = dia2;
+            // calculate initial radius^2 and radius
+            Vector3 d = dia2 - sphere.center;
 
             double radSq = d.squaredMagnitude();
             double rad = Math.Sqrt(radSq);
@@ -1032,14 +1032,14 @@ namespace G3D
         }
 
         /** Computes bounds for a subset of the vertices.  It is ok if vertices appear more than once in the index array. */
-        public static void computeBounds(Array<Vector3> vertex, Array<int> index, out Box box, out Sphere sphere)
+        public static void computeBounds(Array<Vector3> vertex, Array<int> index, ref Box box, ref Sphere sphere)
         {
             Array<Vector3> newArray = new Array<Vector3>(index.size());
             for (int i = 0; i < index.size(); ++i)
             {
                 newArray[i] = vertex[index[i]];
             }
-            computeBounds(newArray, out box, out sphere);
+            computeBounds(newArray, ref box, ref sphere);
         }
 
         /** Converts quadlist (QUADS), tristrip(TRIANGLE_STRIP), and quadstrip (QUAD_STRIP)indices into triangle list (TRIANGLES)  indices. */
@@ -1171,4 +1171,5 @@ namespace G3D
         }
     }
 }
+
 

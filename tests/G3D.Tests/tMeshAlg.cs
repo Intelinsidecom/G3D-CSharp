@@ -205,9 +205,9 @@ namespace G3D.Tests
             }
             Check(invalidPrimitiveRejected, "MeshAlg.toIndexedTriList rejects unsupported primitive");
 
-            Box bounds;
-            Sphere sphere;
-            MeshAlg.computeBounds(vertices, out bounds, out sphere);
+            Box bounds = new Box();
+            Sphere sphere = new Sphere();
+            MeshAlg.computeBounds(vertices, ref bounds, ref sphere);
             Check(bounds.contains(new Vector3(0, 0, 0)), "MeshAlg.computeBounds box minimum");
             Check(bounds.contains(new Vector3(1, 1, 0)), "MeshAlg.computeBounds box maximum");
             Check((new Vector3(0, 0, 0) - sphere.center).magnitude() <= sphere.radius + 0.00001f, "MeshAlg.computeBounds sphere minimum");
@@ -215,7 +215,7 @@ namespace G3D.Tests
 
             Array<int> subset = new Array<int>();
             subset.append(0, 1);
-            MeshAlg.computeBounds(vertices, subset, out bounds, out sphere);
+            MeshAlg.computeBounds(vertices, subset, ref bounds, ref sphere);
             Check(bounds.center().fuzzyEq(new Vector3(0.5f, 0, 0)), "MeshAlg.computeBounds subset center");
             CheckEqual(1.0, bounds.extent(0), "MeshAlg.computeBounds subset x extent");
             CheckEqual(0.0, bounds.extent(1), "MeshAlg.computeBounds subset y extent");
@@ -227,7 +227,7 @@ namespace G3D.Tests
             referenceVertices.append(new Vector3(-3, -4, -5));
             referenceVertices.append(new Vector3(7, 2, 1));
             referenceVertices.append(new Vector3(1, 8, -9));
-            MeshAlg.computeBounds(referenceVertices, out bounds, out sphere);
+            MeshAlg.computeBounds(referenceVertices, ref bounds, ref sphere);
             CheckEqual(2.0, sphere.center.x, "MeshAlg.computeBounds reference sphere x");
             CheckEqual(2.0, sphere.center.y, "MeshAlg.computeBounds reference sphere y");
             CheckEqual(-4.0, sphere.center.z, "MeshAlg.computeBounds reference sphere z");

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using G3D;
 
 namespace G3D.Tests
@@ -350,6 +350,7 @@ namespace G3D.Tests
             public string getAPIVersion() { return "1.0"; }
             public bool hasFocus() { return true; }
             public void Dispose() { }
+            public event Action<GEvent> InputEvent;
         }
 
         private static void testGWindowSurface()
@@ -408,6 +409,105 @@ namespace G3D.Tests
             Check(duplicate, "GPUProgram rejects a duplicate argument");
             args.clear();
             Check(!args.has("scale"), "GPUProgram argument list clears");
+        }
+
+        private static void testAssemblyProgram(RenderDevice renderDevice, string backendName)
+        {
+            if (!renderDevice.supportsVertexProgram())
+            {
+                Console.WriteLine("NOTE: " + backendName + " does not support ARB vertex programs; " +
+                    "the assembly GPU program check is skipped on this system.");
+                return;
+            }
+
+            string vertexCode =
+                "!!ARBvp1.0\n" +
+                "#var float4x4 mvp :  : c[0], 4 : 0 : 1\n" +
+                "#var float4 tint :  : c[4] : 1 : 1\n" +
+                "TEMP pos;\n" +
+                "DP4 pos.x, state.matrix.mvp[0], vertex.position;\n" +
+                "DP4 pos.y, state.matrix.mvp[1], vertex.position;\n" +
+                "DP4 pos.z, state.matrix.mvp[2], vertex.position;\n" +
+                "DP4 pos.w, state.matrix.mvp[3], vertex.position;\n" +
+                "MOV result.position, pos;\n" +
+                "MOV result.color, program.local[4];\n" +
+                "END\n";
+
+            string fragmentCode =
+                "!!ARBfp1.0\n" +
+                "#var float4 tint :  : c[0] : 0 : 1\n" +
+                "MOV result.color, fragment.color;\n" +
+                "END\n";
+
+            VertexProgram vertexProgram = null;
+            PixelProgram pixelProgram = null;
+            try
+            {
+                vertexProgram = VertexProgram.fromCode("G3D assembly vertex program test", vertexCode);
+                Check(vertexProgram != null && vertexProgram.ok(),
+                    backendName + " ARB vertex program loads: " + (vertexProgram == null ? "null" : vertexProgram.messages()));
+                Console.WriteLine("DIAG " + backendName + " ARB vertex program id=" +
+                    (vertexProgram == null ? 0 : vertexProgram.getOpenGLID()) +
+                    " ok=" + (vertexProgram != null && vertexProgram.ok()));
+                if (vertexProgram != null && vertexProgram.ok())
+                {
+                    Check(vertexProgram.getOpenGLID() != 0, backendName + " ARB vertex program name");
+
+                    GPUProgram.ArgList args = new GPUProgram.ArgList();
+                    args.set("mvp", Matrix4.identity());
+                    args.set("tint", new Vector4(1, 1, 1, 1));
+
+                    bool bindFailed = false;
+                    try
+                    {
+                        renderDevice.setVertexProgram(vertexProgram, args);
+                    }
+                    catch (Exception)
+                    {
+                        bindFailed = true;
+                    }
+                    Check(!bindFailed, backendName + " ARB vertex program argument binding");
+
+                    bool missingFailed = false;
+                    try
+                    {
+                        GPUProgram.ArgList missingArgs = new GPUProgram.ArgList();
+                        missingArgs.set("mvp", Matrix4.identity());
+                        renderDevice.setVertexProgram(vertexProgram, missingArgs);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        missingFailed = true;
+                    }
+                    Check(missingFailed, backendName + " ARB vertex program requires every bound variable");
+                }
+
+                pixelProgram = PixelProgram.fromCode("G3D assembly fragment program test", fragmentCode);
+                Check(pixelProgram != null && pixelProgram.ok(),
+                    backendName + " ARB fragment program loads: " + (pixelProgram == null ? "null" : pixelProgram.messages()));
+                if (pixelProgram != null && pixelProgram.ok())
+                {
+                    Check(pixelProgram.getOpenGLID() != 0, backendName + " ARB fragment program name");
+                    Console.WriteLine("DIAG " + backendName + " ARB fragment program id=" + pixelProgram.getOpenGLID());
+                }
+            }
+            finally
+            {
+                try
+                {
+                    if (vertexProgram != null)
+                    {
+                        renderDevice.setVertexProgram(null);
+                    }
+                    if (pixelProgram != null)
+                    {
+                        renderDevice.setPixelProgram(null);
+                    }
+                }
+                catch (Exception)
+                {
+                }
+            }
         }
 
         private static void testLightingParametersSurface()
@@ -556,6 +656,66 @@ namespace G3D.Tests
             global::System.IO.File.WriteAllBytes(filename, data);
         }
 
+        private static void d3d11TextureProbe(RenderDevice renderDevice, string backendName)
+        {
+            const int size = 64;
+            Texture tex = Texture.fromFile("C:\\Users\\Intel\\Documents\\G3D6.09Port\\demos\\Collision_Demo\\bin\\Debug\\data\\sky\\plainsky\\null_plainsky512_up.jpg",
+                TextureFormat.RGB8, Texture.WrapMode.CLAMP, Texture.InterpolateMode.BILINEAR_NO_MIPMAP,
+                Texture.Dimension.DIM_2D, 1.0, Texture.DepthReadMode.DEPTH_NORMAL, 1.0f, 1.0f);
+            renderDevice.allocateTexture(tex);
+            Console.WriteLine("DIAG tex id=" + tex.getOpenGLID() + " w=" + tex.texelWidth() + " h=" + tex.texelHeight());
+            Texture colorTexture = Texture.createEmpty("probe color", size, size, TextureFormat.RGBA8,
+                Texture.Dimension.DIM_2D, Texture.Settings.defaults());
+            renderDevice.allocateTexture(colorTexture);
+            Renderbuffer depthBuffer = Renderbuffer.createEmpty("probe depth", TextureFormat.DEPTH24, size, size);
+            Framebuffer target = Framebuffer.create(size, size);
+            target.setTexture(Framebuffer.AttachmentPoint.Color0, colorTexture);
+            target.setRenderbuffer(Framebuffer.AttachmentPoint.Depth, depthBuffer);
+            renderDevice.pushState();
+            renderDevice.setFramebuffer(target);
+            renderDevice.setViewport(Rect2D.xywh(0, 0, size, size));
+            renderDevice.setProjectionMatrix(Matrix4.orthogonalProjection(-1.0f, 1.0f, -1.0f, 1.0f, 0.1f, 100.0f));
+            renderDevice.setCameraToWorldMatrix(new CoordinateFrame(Vector3.zero()));
+            renderDevice.disableLighting();
+            renderDevice.setColorClearValue(new Color4(0, 0, 0, 1));
+            renderDevice.clear(true, true, false);
+            byte[] pixels = new byte[size * size * 4];
+            target.readPixels(0, 0, size, size, pixels);
+            int c = (size / 2 * size + size / 2) * 4;
+            { int cc = 0; for (int q = 0; q < pixels.Length; ++q) { if (pixels[q] != 0) { ++cc; } }
+            Console.WriteLine("DIAG texprobe after clear nonzero=" + cc + "/" + pixels.Length); }
+            renderDevice.setColor(new Color4(1, 1, 1, 1));
+            renderDevice.setTexture(0, tex);
+            renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+            renderDevice.setTexCoord(0, new Vector2(0, 0));
+            renderDevice.sendVertex(new Vector3(-1, -1, -1));
+            renderDevice.setTexCoord(0, new Vector2(1, 0));
+            renderDevice.sendVertex(new Vector3(1, -1, -1));
+            renderDevice.setTexCoord(0, new Vector2(1, 1));
+            renderDevice.sendVertex(new Vector3(1, 1, -1));
+            renderDevice.setTexCoord(0, new Vector2(0, 1));
+            renderDevice.sendVertex(new Vector3(-1, 1, -1));
+            renderDevice.endPrimitive();
+            target.readPixels(0, 0, size, size, pixels);
+            { int cc = 0; for (int q = 0; q < pixels.Length; ++q) { if (pixels[q] != 0) { ++cc; } }
+            Console.WriteLine("DIAG texprobe textured quad nonzero=" + cc + "/" + pixels.Length + " center=" + pixels[c] + "," + pixels[c+1] + "," + pixels[c+2] + "," + pixels[c+3]); }
+            renderDevice.setTexture(0, null);
+            renderDevice.setColor(new Color4(1, 0, 0, 1));
+            renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+            renderDevice.setTexCoord(0, new Vector2(0, 0));
+            renderDevice.sendVertex(new Vector3(-1, -1, -1));
+            renderDevice.setTexCoord(0, new Vector2(1, 0));
+            renderDevice.sendVertex(new Vector3(1, -1, -1));
+            renderDevice.setTexCoord(0, new Vector2(1, 1));
+            renderDevice.sendVertex(new Vector3(1, 1, -1));
+            renderDevice.setTexCoord(0, new Vector2(0, 1));
+            renderDevice.sendVertex(new Vector3(-1, 1, -1));
+            renderDevice.endPrimitive();
+            target.readPixels(0, 0, size, size, pixels);
+            Console.WriteLine("DIAG texprobe untetxured quad center=" + pixels[c] + "," + pixels[c+1] + "," + pixels[c+2] + "," + pixels[c+3]);
+            renderDevice.popState();
+        }
+
         private static void testFixedFunctionQuad(RenderDevice renderDevice, string backendName)
         {
             Texture colorTexture = Texture.createEmpty("fixed color", 32, 32, TextureFormat.RGBA8,
@@ -580,12 +740,12 @@ namespace G3D.Tests
             target.readPixels(0, 0, 32, 32, pixels);
             int center = (16 * 32 + 16) * 4;
             bool readbackWorks = pixels[center + 2] > 200;
+            { int cc = 0; for (int q = 0; q < pixels.Length; ++q) { if (pixels[q] != 0) { ++cc; } }
+            Console.WriteLine("DIAG clear nonzero bytes: " + cc + "/" + pixels.Length + " center=" + pixels[center] + "," + pixels[center+1] + "," + pixels[center+2] + "," + pixels[center+3]); }
             if (!readbackWorks)
             {
                 Console.WriteLine("NOTE: " + backendName + " pixel readback returned an empty image; " +
                     "the fixed-function pixel checks are skipped on this system.");
-                renderDevice.popState();
-                return;
             }
 
             renderDevice.setColor(new Color4(1, 0, 0, 1));
@@ -596,8 +756,13 @@ namespace G3D.Tests
             renderDevice.endPrimitive();
 
             target.readPixels(0, 0, 32, 32, pixels);
-            Check(pixels[center] > 200 && pixels[center + 1] < 60 && pixels[center + 2] < 60,
-                backendName + " fixed-function quad color (" + pixels[center] + ", " + pixels[center + 1] + ", " + pixels[center + 2] + ", " + pixels[center + 3] + ")");
+            if (readbackWorks)
+            {
+                Check(pixels[center] > 200 && pixels[center + 1] < 60 && pixels[center + 2] < 60,
+                    backendName + " fixed-function quad color (" + pixels[center] + ", " + pixels[center + 1] + ", " + pixels[center + 2] + ", " + pixels[center + 3] + ")");
+            }
+            { int cc = 0; for (int q = 0; q < pixels.Length; ++q) { if (pixels[q] != 0) { ++cc; } }
+            Console.WriteLine("DIAG tri nonzero bytes: " + cc + "/" + pixels.Length + " center=" + pixels[center] + "," + pixels[center+1] + "," + pixels[center+2] + "," + pixels[center+3]); }
 
             renderDevice.setColorClearValue(new Color4(0, 1, 0, 1));
             renderDevice.clear(true, true, false);
@@ -610,9 +775,12 @@ namespace G3D.Tests
             renderDevice.endPrimitive();
 
             target.readPixels(0, 0, 32, 32, pixels);
-            Check(pixels[center] < 60 && pixels[center + 1] > 200 && pixels[center + 2] < 60,
-                backendName + " fixed-function alpha test discards fragments below the reference (" +
-                pixels[center] + ", " + pixels[center + 1] + ", " + pixels[center + 2] + ")");
+            if (readbackWorks)
+            {
+                Check(pixels[center] < 60 && pixels[center + 1] > 200 && pixels[center + 2] < 60,
+                    backendName + " fixed-function alpha test discards fragments below the reference (" +
+                    pixels[center] + ", " + pixels[center + 1] + ", " + pixels[center + 2] + ")");
+            }
 
             renderDevice.setColorClearValue(new Color4(0, 1, 0, 1));
             renderDevice.clear(true, true, false);
@@ -625,14 +793,685 @@ namespace G3D.Tests
             renderDevice.endPrimitive();
 
             target.readPixels(0, 0, 32, 32, pixels);
-            Check(pixels[center] < 60 && pixels[center + 1] < 60 && pixels[center + 2] > 200,
-                backendName + " fixed-function alpha test keeps fragments below the reference (" +
-                pixels[center] + ", " + pixels[center + 1] + ", " + pixels[center + 2] + ")");
+            if (readbackWorks)
+            {
+                Check(pixels[center] < 60 && pixels[center + 1] < 60 && pixels[center + 2] > 200,
+                    backendName + " fixed-function alpha test keeps fragments below the reference (" +
+                    pixels[center] + ", " + pixels[center + 1] + ", " + pixels[center + 2] + ")");
+            }
 
             renderDevice.popState();
         }
 
-        private static void testSkyBoxCoverage(RenderDevice renderDevice, IGraphicsBackend backend)
+        private static void testShadowMap(RenderDevice renderDevice, string backendName)
+        {
+            const int size = 64;
+            Texture shadowMap = Texture.createEmpty("shadow map", size, size, TextureFormat.depth(),
+                Texture.Dimension.DIM_2D, Texture.Settings.shadow());
+            renderDevice.allocateTexture(shadowMap);
+
+            Texture shadowColor = Texture.createEmpty("shadow color", size, size, TextureFormat.RGBA8,
+                Texture.Dimension.DIM_2D, Texture.Settings.defaults());
+            renderDevice.allocateTexture(shadowColor);
+
+            Framebuffer shadowTarget = Framebuffer.create(size, size);
+            shadowTarget.setTexture(Framebuffer.AttachmentPoint.Color0, shadowColor);
+            shadowTarget.setTexture(Framebuffer.AttachmentPoint.Depth, shadowMap);
+
+            Matrix4 lightProjection = Matrix4.orthogonalProjection(-1.0f, 1.0f, -1.0f, 1.0f, 0.1f, 10.0f);
+
+            renderDevice.pushState();
+                renderDevice.setFramebuffer(shadowTarget);
+                renderDevice.setViewport(Rect2D.xywh(0, 0, size, size));
+                renderDevice.setProjectionMatrix(lightProjection);
+                renderDevice.setCameraToWorldMatrix(new CoordinateFrame(Vector3.zero()));
+                renderDevice.disableLighting();
+                renderDevice.setColorClearValue(new Color4(0, 0, 0, 1));
+                renderDevice.clear(true, true, false);
+                renderDevice.setColor(new Color4(1, 1, 1, 1));
+                renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+                renderDevice.sendVertex(new Vector3(-1, -1, -0.5f));
+                renderDevice.sendVertex(new Vector3(1, -1, -0.5f));
+                renderDevice.sendVertex(new Vector3(1, 1, -0.5f));
+                renderDevice.sendVertex(new Vector3(-1, 1, -0.5f));
+                renderDevice.endPrimitive();
+            renderDevice.popState();
+
+            float[] shadowDepth = new float[1];
+            shadowTarget.readDepth(size / 2, size / 2, 1, 1, shadowDepth);
+            Console.WriteLine("DIAG shadow depth=" + shadowDepth[0]);
+            Check(shadowDepth[0] > 0.0f && shadowDepth[0] < 0.5f,
+                backendName + " shadow map depth texture stores the occluder depth (" + shadowDepth[0] + ")");
+
+            Texture receiverColor = Texture.createEmpty("receiver color", size, size, TextureFormat.RGBA8,
+                Texture.Dimension.DIM_2D, Texture.Settings.defaults());
+            renderDevice.allocateTexture(receiverColor);
+            Framebuffer receiverTarget = Framebuffer.create(size, size);
+            receiverTarget.setTexture(Framebuffer.AttachmentPoint.Color0, receiverColor);
+
+            byte[] pixels = new byte[size * size * 4];
+            int center = (size / 2 * size + size / 2) * 4;
+
+            renderDevice.pushState();
+                renderDevice.setFramebuffer(receiverTarget);
+                renderDevice.setViewport(Rect2D.xywh(0, 0, size, size));
+                renderDevice.setProjectionMatrix(lightProjection);
+                renderDevice.setCameraToWorldMatrix(new CoordinateFrame(Vector3.zero()));
+                renderDevice.disableLighting();
+                renderDevice.setColorClearValue(new Color4(0, 0, 0, 1));
+                renderDevice.clear(true, false, false);
+                renderDevice.setColor(new Color4(1, 1, 1, 1));
+                renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+                renderDevice.sendVertex(new Vector3(-1, -1, -1.0f));
+                renderDevice.sendVertex(new Vector3(1, -1, -1.0f));
+                renderDevice.sendVertex(new Vector3(1, 1, -1.0f));
+                renderDevice.sendVertex(new Vector3(-1, 1, -1.0f));
+                renderDevice.endPrimitive();
+            renderDevice.popState();
+
+            receiverTarget.readPixels(0, 0, size, size, pixels);
+            Console.WriteLine("DIAG shadow receiver center=" + pixels[center] + "," + pixels[center + 1] + "," + pixels[center + 2] + "," + pixels[center + 3]);
+            Check(pixels[center] > 200 && pixels[center + 1] > 200 && pixels[center + 2] > 200,
+                backendName + " unshadowed receiver is fully lit (" +
+                pixels[center] + ", " + pixels[center + 1] + ", " + pixels[center + 2] + ")");
+
+            renderDevice.pushState();
+                renderDevice.setFramebuffer(receiverTarget);
+                renderDevice.setViewport(Rect2D.xywh(0, 0, size, size));
+                renderDevice.setProjectionMatrix(lightProjection);
+                renderDevice.setCameraToWorldMatrix(new CoordinateFrame(Vector3.zero()));
+                renderDevice.disableLighting();
+                renderDevice.setColorClearValue(new Color4(0, 0, 0, 1));
+                renderDevice.clear(true, false, false);
+                renderDevice.setColor(new Color4(1, 1, 1, 1));
+                renderDevice.configureShadowMap(1, lightProjection, shadowMap);
+                renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+                renderDevice.sendVertex(new Vector3(-1, -1, -1.0f));
+                renderDevice.sendVertex(new Vector3(1, -1, -1.0f));
+                renderDevice.sendVertex(new Vector3(1, 1, -1.0f));
+                renderDevice.sendVertex(new Vector3(-1, 1, -1.0f));
+                renderDevice.endPrimitive();
+            renderDevice.popState();
+
+            receiverTarget.readPixels(0, 0, size, size, pixels);
+            Console.WriteLine("DIAG shadowed receiver center=" + pixels[center] + "," + pixels[center + 1] + "," + pixels[center + 2] + "," + pixels[center + 3]);
+            Check(pixels[center] < 60 && pixels[center + 1] < 60 && pixels[center + 2] < 60,
+                backendName + " shadow map darkens the shadowed receiver (" +
+                pixels[center] + ", " + pixels[center + 1] + ", " + pixels[center + 2] + ")");
+        }
+
+        /**
+          Covers the shadow-map cases that the full-coverage test above cannot
+          distinguish: an EMPTY shadow-map region (depth at the clear value) and a
+          receiver NEARER than the occluder.  Both must be lit, matching the
+          OpenGL reference.
+          */
+        private static void testShadowMapEdgeCases(RenderDevice renderDevice, string backendName)
+        {
+            const int size = 64;
+            Texture shadowMap = Texture.createEmpty("edge shadow map", size, size, TextureFormat.depth(),
+                Texture.Dimension.DIM_2D, Texture.Settings.shadow());
+            renderDevice.allocateTexture(shadowMap);
+
+            Framebuffer shadowTarget = Framebuffer.create(size, size);
+            shadowTarget.setTexture(Framebuffer.AttachmentPoint.Depth, shadowMap);
+
+            Matrix4 lightProjection = Matrix4.orthogonalProjection(-1.0f, 1.0f, -1.0f, 1.0f, 0.1f, 10.0f);
+
+            renderDevice.pushState();
+                renderDevice.setFramebuffer(shadowTarget);
+                renderDevice.setViewport(Rect2D.xywh(0, 0, size, size));
+                renderDevice.setProjectionMatrix(lightProjection);
+                renderDevice.setCameraToWorldMatrix(new CoordinateFrame(Vector3.zero()));
+                renderDevice.disableLighting();
+                renderDevice.setColorClearValue(new Color4(0, 0, 0, 1));
+                renderDevice.clear(false, true, false);
+                renderDevice.setColor(new Color4(1, 1, 1, 1));
+                // Occluder covers only the LEFT half of the light frustum; the right
+                // half of the shadow map keeps the depth clear value.
+                renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+                renderDevice.sendVertex(new Vector3(-1, -1, -0.5f));
+                renderDevice.sendVertex(new Vector3(0, -1, -0.5f));
+                renderDevice.sendVertex(new Vector3(0, 1, -0.5f));
+                renderDevice.sendVertex(new Vector3(-1, 1, -0.5f));
+                renderDevice.endPrimitive();
+            renderDevice.popState();
+
+            float[] shadowMapEdge = new float[1];
+            shadowTarget.readDepth(size / 2, size / 2, 1, 1, shadowMapEdge);
+            Console.WriteLine("DIAG parity " + backendName + " edge shadow map center depth=" + shadowMapEdge[0]);
+
+            Texture receiverColor = Texture.createEmpty("edge receiver color", size, size, TextureFormat.RGBA8,
+                Texture.Dimension.DIM_2D, Texture.Settings.defaults());
+            renderDevice.allocateTexture(receiverColor);
+            Framebuffer receiverTarget = Framebuffer.create(size, size);
+            receiverTarget.setTexture(Framebuffer.AttachmentPoint.Color0, receiverColor);
+
+            byte[] pixels = new byte[size * size * 4];
+            int leftCenter = (size / 2 * size + size / 4) * 4;
+            int rightCenter = (size / 2 * size + 3 * size / 4) * 4;
+
+            renderDevice.pushState();
+                renderDevice.setFramebuffer(receiverTarget);
+                renderDevice.setViewport(Rect2D.xywh(0, 0, size, size));
+                renderDevice.setProjectionMatrix(lightProjection);
+                renderDevice.setCameraToWorldMatrix(new CoordinateFrame(Vector3.zero()));
+                renderDevice.disableLighting();
+                renderDevice.setColorClearValue(new Color4(0, 0, 0, 1));
+                renderDevice.clear(true, false, false);
+                renderDevice.setColor(new Color4(1, 1, 1, 1));
+                renderDevice.configureShadowMap(1, lightProjection, shadowMap);
+                // Receiver behind the occluder (z = -1.0 vs the occluder's -0.5).
+                renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+                renderDevice.sendVertex(new Vector3(-1, -1, -1.0f));
+                renderDevice.sendVertex(new Vector3(1, -1, -1.0f));
+                renderDevice.sendVertex(new Vector3(1, 1, -1.0f));
+                renderDevice.sendVertex(new Vector3(-1, 1, -1.0f));
+                renderDevice.endPrimitive();
+            renderDevice.popState();
+
+            receiverTarget.readPixels(0, 0, size, size, pixels);
+            Console.WriteLine("DIAG shadow edge: covered=" + pixels[leftCenter] + " empty=" + pixels[rightCenter]);
+            Check(pixels[leftCenter] < 60,
+                backendName + " shadow map darkens a receiver behind the occluder (" + pixels[leftCenter] + ")");
+            Check(pixels[rightCenter] > 200,
+                backendName + " shadow map leaves an empty region lit (" + pixels[rightCenter] + ")");
+        }
+
+        /**
+          Renders a miniature version of the Collision_Demo lighting structure (a
+          ground plane, a floating occluder, an ambient pass and an additive sun
+          pass with a shadow map) and prints the resulting pixels so the OpenGL
+          and Direct3D 11 outputs can be compared directly.
+          */
+        private static void testShadowSceneParity(RenderDevice renderDevice, string backendName)
+        {
+            const int size = 128;
+            const int shadowSize = 512;
+            // Toggled by the caller to bisect whether the shadow lookup or the
+            // sun pass itself is responsible for the rendered result.
+            bool ParityUseShadowMap = true;
+
+            Texture shadowMap = Texture.createEmpty("parity shadow map", shadowSize, shadowSize, TextureFormat.depth(),
+                Texture.Dimension.DIM_2D, Texture.Settings.shadow());
+            renderDevice.allocateTexture(shadowMap);
+            Framebuffer shadowTarget = Framebuffer.create(shadowSize, shadowSize);
+            shadowTarget.setTexture(Framebuffer.AttachmentPoint.Depth, shadowMap);
+
+            Texture sceneColor = Texture.createEmpty("parity scene color", size, size, TextureFormat.RGBA8,
+                Texture.Dimension.DIM_2D, Texture.Settings.defaults());
+            renderDevice.allocateTexture(sceneColor);
+            Framebuffer sceneTarget = Framebuffer.create(size, size);
+            sceneTarget.setTexture(Framebuffer.AttachmentPoint.Color0, sceneColor);
+            Texture sceneDepth = Texture.createEmpty("parity scene depth", size, size, TextureFormat.depth(),
+                Texture.Dimension.DIM_2D, Texture.Settings.video());
+            renderDevice.allocateTexture(sceneDepth);
+            sceneTarget.setTexture(Framebuffer.AttachmentPoint.Depth, sceneDepth);
+
+            Vector3 lightDirection = new Vector3(0.3f, 0.8f, -0.5f).direction();
+            CoordinateFrame lightCFrame = new CoordinateFrame(Vector3.zero());
+            lightCFrame.lookAt(-lightDirection, Vector3.unitY());
+            lightCFrame.translation = lightDirection * 20;
+            Matrix4 lightProjection = Matrix4.orthogonalProjection(-17, 17, -17, 17, 1, 40);
+            Matrix4 lightMVP = lightProjection * lightCFrame.inverse();
+
+            GCamera camera = new GCamera();
+            camera.setPosition(new Vector3(15, 20, 15));
+            camera.lookAt(new Vector3(-2, 3, -5));
+
+            // Ground plane and a floating occluder box, both in world space.
+            renderDevice.pushState();
+                renderDevice.setFramebuffer(shadowTarget);
+                renderDevice.setViewport(Rect2D.xywh(0, 0, shadowSize, shadowSize));
+                renderDevice.setProjectionMatrix(lightProjection);
+                renderDevice.setCameraToWorldMatrix(lightCFrame);
+                renderDevice.setDepthTest(RenderDevice.DepthTest.DEPTH_LEQUAL);
+                renderDevice.setDepthWrite(true);
+                renderDevice.setColorWrite(false);
+                renderDevice.setPolygonOffset(4);
+                renderDevice.disableLighting();
+                renderDevice.clear(false, true, false);
+                renderDevice.setColor(new Color4(1, 1, 1, 1));
+                renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+                renderDevice.sendVertex(new Vector3(-14, 0, 10));
+                renderDevice.sendVertex(new Vector3(14, 0, 10));
+                renderDevice.sendVertex(new Vector3(14, 0, -10));
+                renderDevice.sendVertex(new Vector3(-14, 0, -10));
+                renderDevice.endPrimitive();
+                renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+                renderDevice.sendVertex(new Vector3(-2, 4, -2));
+                renderDevice.sendVertex(new Vector3(2, 4, -2));
+                renderDevice.sendVertex(new Vector3(2, 4, 2));
+                renderDevice.sendVertex(new Vector3(-2, 4, 2));
+                renderDevice.endPrimitive();
+            renderDevice.popState();
+
+            renderDevice.pushState();
+                renderDevice.setFramebuffer(sceneTarget);
+                renderDevice.setViewport(Rect2D.xywh(0, 0, size, size));
+                renderDevice.setProjectionAndCameraMatrix(camera);
+                renderDevice.setColorClearValue(new Color4(0, 0, 0, 1));
+                renderDevice.clear(true, true, false);
+
+                // Ambient pass.
+                renderDevice.enableLighting();
+                renderDevice.setLight(0, GLight.directional(-lightDirection, Color3.white() * 0.25f));
+                renderDevice.setAmbientLightColor(new Color3(0.2f, 0.25f, 0.35f));
+                renderDevice.setColor(new Color4(0.7f, 0.7f, 0.7f, 1));
+                DrawGroundAndBox(renderDevice);
+
+                // Additive sun pass with the shadow map.
+                renderDevice.setAmbientLightColor(Color3.black());
+                renderDevice.setDepthTest(RenderDevice.DepthTest.DEPTH_LEQUAL);
+                renderDevice.setDepthWrite(false);
+                renderDevice.setLight(0, GLight.directional(lightDirection, Color3.white()));
+                renderDevice.setBlendFunc(RenderDevice.BlendFunc.BLEND_ONE, RenderDevice.BlendFunc.BLEND_ONE);
+                if (ParityUseShadowMap)
+                {
+                    renderDevice.configureShadowMap(1, lightMVP, shadowMap);
+                }
+                DrawGroundAndBox(renderDevice);
+            renderDevice.popState();
+
+            // The shadow pass must cover the ground across the whole light frustum.
+            float[] parityShadowDepth = new float[shadowSize * shadowSize];
+            shadowTarget.readDepth(0, 0, shadowSize, shadowSize, parityShadowDepth);
+            int parityShadowNonClear = 0;
+            for (int i = 0; i < parityShadowDepth.Length; ++i)
+            {
+                if (parityShadowDepth[i] < 0.999f) ++parityShadowNonClear;
+            }
+            Check(parityShadowNonClear > shadowSize * shadowSize * 3 / 10,
+                backendName + " shadow map covers the ground (" + parityShadowNonClear + "/" + parityShadowDepth.Length + ")");
+
+byte[] pixels = new byte[size * size * 4];
+            sceneTarget.readPixels(0, 0, size, size, pixels);
+            Console.Write("DIAG parity " + backendName + ":");
+            long sum = 0;
+            for (int i = 0; i < pixels.Length; ++i)
+            {
+                // Sum RGB only; the framebuffer alpha channel legitimately differs
+                // between the backends and is not part of the rendered color.
+                if ((i & 3) != 3) { sum += pixels[i]; }
+            }
+            for (int y = 16; y < size; y += 24)
+            {
+                for (int x = 16; x < size; x += 24)
+                {
+                    int at = (y * size + x) * 4;
+                    Console.Write(" " + pixels[at] + "/" + pixels[at + 1] + "/" + pixels[at + 2]);
+                }
+            }
+            Console.WriteLine("  sum=" + sum);
+        }
+
+        private static void DrawGroundAndBox(RenderDevice renderDevice)
+        {
+            renderDevice.setNormal(new Vector3(0, 1, 0));
+            renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+            renderDevice.sendVertex(new Vector3(-14, 0, 10));
+            renderDevice.sendVertex(new Vector3(14, 0, 10));
+            renderDevice.sendVertex(new Vector3(14, 0, -10));
+            renderDevice.sendVertex(new Vector3(-14, 0, -10));
+            renderDevice.endPrimitive();
+            // Box top face (a thin slab) with outward-facing winding.
+            renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+            renderDevice.sendVertex(new Vector3(-2, 4, 2));
+            renderDevice.sendVertex(new Vector3(2, 4, 2));
+            renderDevice.sendVertex(new Vector3(2, 4, -2));
+            renderDevice.sendVertex(new Vector3(-2, 4, -2));
+            renderDevice.endPrimitive();
+        }
+
+        /**
+          A framebuffer with only a depth attachment (no color) must still receive
+          depth writes. Direct3D 11 skips most fragments of a depth-only target unless
+          a render-target view of identical dimensions is bound alongside the
+          depth-stencil view, so this compares the depth-only case against one that
+          also has a color attachment. The Collision_Demo shadow map is depth-only.
+          */
+        private static void testDepthOnlyFramebuffer(RenderDevice renderDevice, string backendName)
+        {
+            int[] nonClearCounts = new int[2];
+            float[] centerDepths = new float[2];
+
+            foreach (bool withColor in new bool[] { false, true })
+            {
+                const int size = 512;
+                Texture shadowMap = Texture.createEmpty("depth-only shadow map", size, size, TextureFormat.depth(),
+                    Texture.Dimension.DIM_2D, Texture.Settings.shadow());
+                renderDevice.allocateTexture(shadowMap);
+                Framebuffer target = Framebuffer.create(size, size);
+                if (withColor)
+                {
+                    Texture color = Texture.createEmpty("depth-only color", size, size, TextureFormat.RGBA8,
+                        Texture.Dimension.DIM_2D, Texture.Settings.defaults());
+                    renderDevice.allocateTexture(color);
+                    target.setTexture(Framebuffer.AttachmentPoint.Color0, color);
+                }
+                target.setTexture(Framebuffer.AttachmentPoint.Depth, shadowMap);
+
+                // Tilted light above the ground; a vertical one makes lookAt degenerate.
+                Vector3 lightDirection = new Vector3(0.5f, 0.8f, 0.3f).direction();
+                CoordinateFrame lightFrame = CoordinateFrame.identity();
+                lightFrame.rotation = Matrix3.identity();
+                lightFrame.translation = Vector3.zero();
+                lightFrame.lookAt(-lightDirection, Vector3.unitY());
+                lightFrame.translation = lightDirection * 20;
+
+                renderDevice.pushState();
+                    renderDevice.setFramebuffer(target);
+                    renderDevice.setViewport(Rect2D.xywh(0, 0, size, size));
+                    renderDevice.setProjectionMatrix(Matrix4.orthogonalProjection(-2, 2, -2, 2, 1, 40));
+                    renderDevice.setCameraToWorldMatrix(lightFrame);
+                    renderDevice.setDepthWrite(true);
+                    renderDevice.setDepthTest(RenderDevice.DepthTest.DEPTH_LEQUAL);
+                    renderDevice.setColorWrite(false);
+                    renderDevice.setPolygonOffset(4);
+                    renderDevice.disableLighting();
+                    renderDevice.clear(true, true, false);
+                    renderDevice.setColor(new Color4(1, 1, 1, 1));
+                    renderDevice.setNormal(new Vector3(0, 1, 0));
+                    renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+                    renderDevice.sendVertex(new Vector3(-1, 0, 1));
+                    renderDevice.sendVertex(new Vector3(1, 0, 1));
+                    renderDevice.sendVertex(new Vector3(1, 0, -1));
+                    renderDevice.sendVertex(new Vector3(-1, 0, -1));
+                    renderDevice.endPrimitive();
+                renderDevice.popState();
+
+                float[] depth = new float[size * size];
+                target.readDepth(0, 0, size, size, depth);
+                int index = withColor ? 1 : 0;
+                centerDepths[index] = depth[(size / 2) * size + size / 2];
+                nonClearCounts[index] = 0;
+                for (int i = 0; i < depth.Length; ++i)
+                {
+                    if (depth[i] < 0.999f) ++nonClearCounts[index];
+                }
+            }
+
+            Check(centerDepths[0] > 0.1f && centerDepths[0] < 0.9f,
+                backendName + " depth-only framebuffer stores the geometry depth (" + centerDepths[0] + ")");
+            Check(centerDepths[1] > 0.1f && centerDepths[1] < 0.9f,
+                backendName + " framebuffer with a color attachment stores the geometry depth (" + centerDepths[1] + ")");
+            Check(nonClearCounts[0] == nonClearCounts[1],
+                backendName + " depth-only framebuffer covers the same texels as one with a color attachment ("
+                + nonClearCounts[0] + " vs " + nonClearCounts[1] + ")");
+        }
+
+        /** Emits one axis-aligned quad centred on (0,4,0) with the given outward normal. */
+        private static void drawBoxFace(RenderDevice renderDevice, Vector3 normal)
+        {
+            const float c = 4.0f;
+            const float h = 2.0f;
+            renderDevice.setNormal(normal);
+            renderDevice.beginPrimitive(RenderDevice.Primitive.QUADS);
+            if (normal.x > 0.5f)
+            {
+                renderDevice.sendVertex(new Vector3(+c, c - h, +h));
+                renderDevice.sendVertex(new Vector3(+c, c - h, -h));
+                renderDevice.sendVertex(new Vector3(+c, c + h, -h));
+                renderDevice.sendVertex(new Vector3(+c, c + h, +h));
+            }
+            else if (normal.x < -0.5f)
+            {
+                renderDevice.sendVertex(new Vector3(-c, c - h, -h));
+                renderDevice.sendVertex(new Vector3(-c, c - h, +h));
+                renderDevice.sendVertex(new Vector3(-c, c + h, +h));
+                renderDevice.sendVertex(new Vector3(-c, c + h, -h));
+            }
+            else if (normal.y > 0.5f)
+            {
+                renderDevice.sendVertex(new Vector3(-h, +c, +h));
+                renderDevice.sendVertex(new Vector3(+h, +c, +h));
+                renderDevice.sendVertex(new Vector3(+h, +c, -h));
+                renderDevice.sendVertex(new Vector3(-h, +c, -h));
+            }
+            else if (normal.y < -0.5f)
+            {
+                renderDevice.sendVertex(new Vector3(-h, -c, -h));
+                renderDevice.sendVertex(new Vector3(+h, -c, -h));
+                renderDevice.sendVertex(new Vector3(+h, -c, +h));
+                renderDevice.sendVertex(new Vector3(-h, -c, +h));
+            }
+            else if (normal.z > 0.5f)
+            {
+                renderDevice.sendVertex(new Vector3(-h, c - h, +c));
+                renderDevice.sendVertex(new Vector3(+h, c - h, +c));
+                renderDevice.sendVertex(new Vector3(+h, c + h, +c));
+                renderDevice.sendVertex(new Vector3(-h, c + h, +c));
+            }
+            else
+            {
+                renderDevice.sendVertex(new Vector3(+h, c - h, -c));
+                renderDevice.sendVertex(new Vector3(-h, c - h, -c));
+                renderDevice.sendVertex(new Vector3(-h, c + h, -c));
+                renderDevice.sendVertex(new Vector3(+h, c + h, -c));
+            }
+            renderDevice.endPrimitive();
+        }
+
+        /**
+          Compares the lit surface color of a six-sided box after the two-pass
+          (ambient then additive sun) lighting structure the Collision_Demo uses, so
+          per-face lighting differences between the backends are visible.
+          */
+        /**
+          Checks the vertical origin of uploaded texture data.  OpenGL's texture row
+          zero is the BOTTOM of the image and Direct3D 11's is the TOP, so a texture
+          uploaded without correction appears vertically mirrored.
+          */
+        /** Draws the box with a rotated object-to-world transform, exercising the normal matrix. */
+        private static void drawRotatedBox(RenderDevice renderDevice)
+        {
+            CoordinateFrame frame = CoordinateFrame.identity();
+            frame.rotation = Matrix3.fromAxisAngle(new Vector3(0.3f, 0.9f, 0.2f).direction(), 0.7f);
+            frame.translation = new Vector3(0, 4, 0);
+            renderDevice.setObjectToWorldMatrix(frame);
+            drawBoxFace(renderDevice, Vector3.unitX());
+            drawBoxFace(renderDevice, -Vector3.unitX());
+            drawBoxFace(renderDevice, Vector3.unitY());
+            drawBoxFace(renderDevice, -Vector3.unitY());
+            drawBoxFace(renderDevice, Vector3.unitZ());
+            drawBoxFace(renderDevice, -Vector3.unitZ());
+        }
+        private static void testBoxSurfaceParity(RenderDevice renderDevice, string backendName)
+        {
+            const int size = 128;
+            Vector3 lightDirection = new Vector3(0.3f, 0.8f, -0.5f).direction();
+
+            GCamera camera = new GCamera();
+            camera.setPosition(new Vector3(9, 5, 12));
+            camera.lookAt(new Vector3(0, 4, 0));
+
+            Texture sceneColor = Texture.createEmpty("box surface color", size, size, TextureFormat.RGBA8,
+                Texture.Dimension.DIM_2D, Texture.Settings.defaults());
+            renderDevice.allocateTexture(sceneColor);
+            Framebuffer sceneTarget = Framebuffer.create(size, size);
+            sceneTarget.setTexture(Framebuffer.AttachmentPoint.Color0, sceneColor);
+            Texture sceneDepth = Texture.createEmpty("box surface depth", size, size, TextureFormat.depth(),
+                Texture.Dimension.DIM_2D, Texture.Settings.video());
+            renderDevice.allocateTexture(sceneDepth);
+            sceneTarget.setTexture(Framebuffer.AttachmentPoint.Depth, sceneDepth);
+
+            renderDevice.pushState();
+                renderDevice.setFramebuffer(sceneTarget);
+                renderDevice.setViewport(Rect2D.xywh(0, 0, size, size));
+                renderDevice.setProjectionAndCameraMatrix(camera);
+                // No culling or specular so the comparison isolates diffuse lighting.
+                renderDevice.setCullFace(RenderDevice.CullFace.CULL_NONE);
+                renderDevice.setSpecularCoefficient(new Color3(0.8f, 0.8f, 0.8f));
+                renderDevice.setColorClearValue(new Color4(0, 0, 0, 1));
+                renderDevice.clear(true, true, false);
+
+                renderDevice.enableLighting();
+                renderDevice.setLight(0, GLight.directional(-lightDirection, Color3.white() * 0.25f));
+                renderDevice.setAmbientLightColor(new Color3(0.2f, 0.25f, 0.35f));
+                renderDevice.setColor(new Color4(0.5f, 0.5f, 0.5f, 1));
+                renderDevice.setSpecularCoefficient(new Color3(0.8f, 0.8f, 0.8f));
+                drawRotatedBox(renderDevice);
+
+                renderDevice.setAmbientLightColor(Color3.black());
+                renderDevice.setDepthWrite(false);
+                renderDevice.setLight(0, GLight.directional(lightDirection, Color3.white()));
+                renderDevice.setBlendFunc(RenderDevice.BlendFunc.BLEND_ONE, RenderDevice.BlendFunc.BLEND_ONE);
+                renderDevice.setSpecularCoefficient(new Color3(0.8f, 0.8f, 0.8f));
+                drawRotatedBox(renderDevice);
+            renderDevice.popState();
+
+            byte[] pixels = new byte[size * size * 4];
+            sceneTarget.readPixels(0, 0, size, size, pixels);
+            // Sample the centre of each face's projected extent.
+            int[][] probes = new int[][] {
+                new int[] { size * 3 / 4, size / 2 },   // +X
+                new int[] { size / 4, size / 2 },        // -X
+                new int[] { size / 2, size / 4 },        // +Y
+                new int[] { -1, -1 },                    // -Y (not visible from this camera)
+                new int[] { size / 2, size * 3 / 4 },    // +Z
+                new int[] { -1, -1 }                     // -Z (not visible from this camera)
+            };
+            string[] names = new string[] { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
+            Console.Write("DIAG box " + backendName + ":");
+            for (int i = 0; i < probes.Length; ++i)
+            {
+                if (probes[i][0] < 0) { Console.Write(" " + names[i] + "=hidden"); continue; }
+                int at = (probes[i][1] * size + probes[i][0]) * 4;
+                Console.Write(" " + names[i] + "=" + pixels[at] + "/" + pixels[at + 1] + "/" + pixels[at + 2]);
+            }
+            Console.WriteLine();
+        }
+
+        /**
+          A surface shaded with a zero shininess exponent (the Collision_Demo's
+          glDiffuse path: specular black + shininess 0) must keep its ambient
+          term even when the half-vector points away from the normal.  GL
+          evaluates (N dot H)^0 as 1, while HLSL pow(0, 0) is NaN and would turn
+          the whole lit color NaN.
+         */
+        private static void testZeroShininessSpecular(RenderDevice renderDevice, string backendName)
+        {
+            const int size = 128;
+
+            Texture sceneColor = Texture.createEmpty("zero shininess color", size, size, TextureFormat.RGBA8,
+                Texture.Dimension.DIM_2D, Texture.Settings.defaults());
+            renderDevice.allocateTexture(sceneColor);
+            Framebuffer sceneTarget = Framebuffer.create(size, size);
+            sceneTarget.setTexture(Framebuffer.AttachmentPoint.Color0, sceneColor);
+            Texture sceneDepth = Texture.createEmpty("zero shininess depth", size, size, TextureFormat.depth(),
+                Texture.Dimension.DIM_2D, Texture.Settings.video());
+            renderDevice.allocateTexture(sceneDepth);
+            sceneTarget.setTexture(Framebuffer.AttachmentPoint.Depth, sceneDepth);
+
+            GCamera camera = new GCamera();
+            camera.setPosition(new Vector3(0, 6, 3));
+            camera.lookAt(new Vector3(0, 0, 0));
+
+            renderDevice.pushState();
+            renderDevice.setFramebuffer(sceneTarget);
+            renderDevice.setViewport(Rect2D.xywh(0, 0, size, size));
+            renderDevice.setProjectionAndCameraMatrix(camera);
+            renderDevice.setColorClearValue(new Color4(0, 0, 0, 1));
+            renderDevice.clear(true, true, false);
+            renderDevice.enableLighting();
+            // A light from below, so the up-facing quad's normal points away from
+            // the half-vector and the specular exponent zero path is exercised.
+            renderDevice.setLight(0, GLight.directional(new Vector3(0, -1, 0), Color3.white()));
+            renderDevice.setAmbientLightColor(new Color3(0.2f, 0.2f, 0.2f));
+            renderDevice.setColor(new Color4(0.7f, 0.7f, 0.7f, 1));
+            renderDevice.setSpecularCoefficient(Color3.black());
+            renderDevice.setShininess(0.0f);
+
+            renderDevice.beginPrimitive(RenderDevice.Primitive.TRIANGLES);
+            renderDevice.setNormal(Vector3.unitY());
+            renderDevice.sendVertex(new Vector3(-2, 0, -2));
+            renderDevice.sendVertex(new Vector3(-2, 0, 2));
+            renderDevice.sendVertex(new Vector3(2, 0, -2));
+            renderDevice.setNormal(Vector3.unitY());
+            renderDevice.sendVertex(new Vector3(-2, 0, 2));
+            renderDevice.sendVertex(new Vector3(2, 0, 2));
+            renderDevice.sendVertex(new Vector3(2, 0, -2));
+            renderDevice.endPrimitive();
+            renderDevice.popState();
+
+            byte[] pixels = new byte[size * size * 4];
+            sceneTarget.readPixels(0, 0, size, size, pixels);
+            int brightest = 0;
+            for (int i = 0; i < size * size; ++i)
+            {
+                int v = pixels[i * 4];
+                if (v > brightest) brightest = v;
+            }
+            // The ambient term alone gives 0.2 * 0.7 * 255 = 36.
+            Check(brightest >= 25,
+                backendName + " zero-shininess specular keeps the ambient term (brightest=" + brightest + ")"
+                + (brightest == 0 ? "; the lit color was NaN" : ""));
+            Console.WriteLine("DIAG zero shininess " + backendName + " brightest=" + brightest);
+        }
+
+        /**
+          Renders a sky whose six faces are distinct solid colors and reports the
+          color seen looking along each world axis, so the cube-map face orientation
+          can be compared between the backends.
+          */
+        private static void testCubeMapFaceOrientation(RenderDevice renderDevice, string backendName)
+        {
+            string dir = global::System.IO.Path.Combine(global::System.IO.Path.GetTempPath(), "glg3d_cube_orient");
+            global::System.IO.Directory.CreateDirectory(dir);
+            Color3[] faceColors = new Color3[] {
+                new Color3(1, 0, 0), new Color3(0, 1, 0), new Color3(0, 0, 1),
+                new Color3(1, 1, 0), new Color3(1, 0, 1), new Color3(0, 1, 1)
+            };
+            string[] exts = new string[] { "ft", "bk", "up", "dn", "rt", "lf" };
+            for (int f = 0; f < 6; ++f)
+            {
+                writeBMP(global::System.IO.Path.Combine(dir, "sky_" + exts[f] + ".bmp"),
+                    (byte)(faceColors[f].r * 255), (byte)(faceColors[f].g * 255), (byte)(faceColors[f].b * 255), 16, 16);
+            }
+
+            ReferenceCountedPointer<Sky> sky =
+                Sky.fromFile(renderDevice, "", global::System.IO.Path.Combine(dir, "sky_*.bmp"), false);
+            Check(sky != null && sky.pointer() != null, "Sky loaded for cube orientation");
+
+            Texture colorTexture = Texture.createEmpty("cube orient color", 32, 32, TextureFormat.RGBA8,
+                Texture.Dimension.DIM_2D, Texture.Settings.defaults());
+            renderDevice.allocateTexture(colorTexture);
+            Framebuffer target = Framebuffer.create(32, 32);
+            target.setTexture(Framebuffer.AttachmentPoint.Color0, colorTexture);
+
+            Vector3[] lookDirections = new Vector3[] {
+                new Vector3(1, 0, 0), new Vector3(-1, 0, 0),
+                new Vector3(0, 1, 0), new Vector3(0, -1, 0),
+                new Vector3(0, 0, 1), new Vector3(0, 0, -1)
+            };
+            string[] names = new string[] { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
+            LightingParameters lighting = new LightingParameters();
+            lighting.skyAmbient = Color3.white();
+
+            Console.Write("DIAG cube " + backendName + ":");
+            for (int i = 0; i < lookDirections.Length; ++i)
+            {
+                renderDevice.pushState();
+                    renderDevice.setFramebuffer(target);
+                    renderDevice.setViewport(Rect2D.xywh(0, 0, 32, 32));
+                    renderDevice.setProjectionMatrix(Matrix4.perspectiveProjection(-1, 1, -1, 1, 0.1f, 100.0f));
+                    CoordinateFrame camera = new CoordinateFrame(Vector3.zero());
+                    camera.lookAt(lookDirections[i], Vector3.unitZ());
+                    renderDevice.setCameraToWorldMatrix(camera);
+                    renderDevice.setColorClearValue(new Color4(0, 0, 0, 1));
+                    renderDevice.clear(true, true, false);
+                    sky.pointer().render(renderDevice, lighting);
+                renderDevice.popState();
+
+                byte[] pixels = new byte[32 * 32 * 4];
+                target.readPixels(0, 0, 32, 32, pixels);
+                int centre = (16 * 32 + 16) * 4;
+                Console.Write(" " + names[i] + "=" + pixels[centre] + "/" + pixels[centre + 1] + "/" + pixels[centre + 2]);
+            }
+            Console.WriteLine();
+        }
+
+private static void testSkyBoxCoverage(RenderDevice renderDevice, IGraphicsBackend backend)
         {
             string dir = global::System.IO.Path.Combine(global::System.IO.Path.GetTempPath(), "glg3d_sky_test");
             global::System.IO.Directory.CreateDirectory(dir);
@@ -786,6 +1625,8 @@ namespace G3D.Tests
 
         public static int Main()
         {
+            global::G3D.Image.SystemDrawing.SystemDrawingImageDecoder.register();
+
             BackendCaps caps = new BackendCaps();
             Check(caps.MaxTextureSize == 0, "BackendCaps.MaxTextureSize default");
             Check(caps.MaxTextureUnits == 0, "BackendCaps.MaxTextureUnits default");
@@ -1043,7 +1884,15 @@ namespace G3D.Tests
 
                 testSkyBoxCoverage(renderDevice, openGLBackend);
                 testFixedFunctionQuad(renderDevice, "OpenGL");
+                testShadowMap(renderDevice, "OpenGL");
+                testShadowMapEdgeCases(renderDevice, "OpenGL");
+                testDepthOnlyFramebuffer(renderDevice, "OpenGL");
+                testBoxSurfaceParity(renderDevice, "OpenGL");
+                testZeroShininessSpecular(renderDevice, "OpenGL");
+                testCubeMapFaceOrientation(renderDevice, "OpenGL");
+                testShadowSceneParity(renderDevice, "OpenGL");
                 testCubeMapReflection(renderDevice, openGLBackend, "OpenGL");
+                testAssemblyProgram(renderDevice, "OpenGL");
 
 
 
@@ -1120,8 +1969,10 @@ namespace G3D.Tests
                 direct3D11Form.Show();
                 direct3D11Window.Control.CreateControl();
                 global::System.Windows.Forms.Application.DoEvents();
+                Direct3D11.Direct3D11Backend.EnableDebugLayer = true;
                 direct3D11Backend = new Direct3D11.Direct3D11Backend();
                 direct3D11Backend.Initialize(direct3D11Window);
+                Console.WriteLine("DIAG d3d11 debug layer active=" + direct3D11Backend.DebugLayerActive);
                 Check(direct3D11Backend.Caps.MaxTextureUnits >= 1, "Direct3D 11 texture unit limit");
                 Check(direct3D11Backend.SupportsShaderLanguage(GraphicsShaderLanguage.HLSL), "Direct3D 11 HLSL capability");
 
@@ -1138,7 +1989,51 @@ namespace G3D.Tests
                 Check(direct3D11DepthValue >= 0.0 && direct3D11DepthValue <= 1.0, "Direct3D 11 depth buffer value");
 
                 testFixedFunctionQuad(direct3D11RenderDevice, "Direct3D 11");
+                testShadowMap(direct3D11RenderDevice, "Direct3D 11");
+                testShadowMapEdgeCases(direct3D11RenderDevice, "Direct3D 11");
+                testDepthOnlyFramebuffer(direct3D11RenderDevice, "Direct3D 11");
+                testBoxSurfaceParity(direct3D11RenderDevice, "Direct3D 11");
+                testZeroShininessSpecular(direct3D11RenderDevice, "Direct3D 11");
+                testCubeMapFaceOrientation(direct3D11RenderDevice, "Direct3D 11");
+                testShadowSceneParity(direct3D11RenderDevice, "Direct3D 11");
+
+                byte[] direct3D11Constants = direct3D11Backend.ReadFixedFunctionConstants();
+                bool direct3D11ConstantsWritten = false;
+                if (direct3D11Constants != null)
+                {
+                    for (int constantByte = 0; constantByte < direct3D11Constants.Length; ++constantByte)
+                    {
+                        if (direct3D11Constants[constantByte] != 0)
+                        {
+                            direct3D11ConstantsWritten = true;
+                            break;
+                        }
+                    }
+                }
+                Check(direct3D11ConstantsWritten,
+                    "Direct3D 11 fixed-function constant buffer is updated with the drawn matrices");
+
+                d3d11TextureProbe(direct3D11RenderDevice, "Direct3D 11");
                 testCubeMapReflection(direct3D11RenderDevice, direct3D11Backend, "Direct3D 11");
+
+                string[] direct3D11Messages = direct3D11Backend.DrainDeviceMessages();
+                int direct3D11Errors = 0;
+                foreach (string direct3D11Message in direct3D11Messages)
+                {
+                    Console.WriteLine("DIAG d3d11 device message: " + direct3D11Message);
+                    if (direct3D11Message.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ++direct3D11Errors;
+                    }
+                }
+                if (direct3D11Backend.DebugLayerActive)
+                {
+                    Check(direct3D11Errors == 0, "Direct3D 11 device reported no error-severity messages");
+                }
+                else
+                {
+                    Console.WriteLine("NOTE: the Direct3D 11 debug layer is unavailable; device error checks are skipped.");
+                }
             }
             catch (Exception e)
             {

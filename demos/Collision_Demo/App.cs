@@ -62,7 +62,9 @@ namespace Collision_Demo
             processEvents = () => System.Windows.Forms.Application.DoEvents();
 
             // Use data directory relative to executable
-            dataDir = "data/";
+            string exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
+            string exeDir = System.IO.Path.GetDirectoryName(exePath);
+            dataDir = System.IO.Path.Combine(exeDir, "data") + System.IO.Path.DirectorySeparatorChar;
         }
 
         private static GWindow CreateWindow(string backend)

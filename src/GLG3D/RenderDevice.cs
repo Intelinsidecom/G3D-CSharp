@@ -1,4 +1,4 @@
-﻿/**
+/**
   @file RenderDevice.h
 
   Graphics hardware abstraction layer (wrapper for OpenGL).
@@ -235,6 +235,10 @@ namespace G3D
         private List<RenderState> stateStack;
         private Stack<RenderState> statePool;
         private VAR immediateIndexVAR;
+
+        /** Copy of the indices most recently uploaded to immediateIndexVAR. */
+
+
 
         // Debug settings
         public DebugSettings debugSettings = new DebugSettings();
@@ -873,6 +877,7 @@ namespace G3D
             cleanedup = false;
             brightScale = 1.0;
             immediateIndexVARCapacity = 0;
+            immediateIndexVAR = null;
             deleteWindow = false;
             for (int i = 0; i < GLCaps.G3D_MAX_TEXTURE_UNITS; ++i)
             {
@@ -2729,7 +2734,7 @@ public void describeSystem(TextOutput t)
 
             VAR texCoordArray = (state.texCoordArray.Length > 0) ? state.texCoordArray[0] : null;
             backend.DrawVAR(primitive, numVertices, state.vertexArray, state.normalArray,
-                            state.colorArray, texCoordArray, null);
+                            state.colorArray, texCoordArray, (VAR)null);
 
             afterPrimitive();
 
@@ -2752,21 +2757,80 @@ public void describeSystem(TextOutput t)
 
             // The graphics backends draw 32 bit indices, so the indices are
             // converted before they are uploaded.
-            uint[] values = new uint[index.Length];
-            for (int i = 0; i < index.Length; ++i)
+            uint[] values = toUIntIndexArray(index);
+
+            if (numIndices > values.Length)
             {
-                values[i] = indexToUInt(index[i]);
+                numIndices = values.Length;
+            }
+            if (numIndices < 0)
+            {
+                numIndices = 0;
             }
 
-            if (immediateIndexVAR == null || immediateIndexVARCapacity < values.Length)
+            sendIndicesUInt(primitive, numIndices, values);
+        }
+
+        public void sendIndices<T>(Primitive primitive, Array<T> index) where T : struct
+        {
+            Debug.debugAssertM(currentFramebufferComplete(), "Incomplete Framebuffer");
+
+            if (backend == null || state.vertexArray == null)
             {
-                immediateIndexVARCapacity = Math.Max(values.Length, 64);
-                immediateIndexVAR = VAR.create(VAR.Type.INDEX, immediateIndexVARCapacity, VAR.Usage.STREAM);
+                return;
             }
 
-            immediateIndexVAR.setData(values);
-            state.indexArray = immediateIndexVAR;
-            sendIndices(primitive, Math.Min(numIndices, values.Length));
+            if (index == null)
+            {
+                throw new ArgumentNullException("index");
+            }
+
+            // The original RenderDevice::sendIndices passed the caller's index
+            // buffer straight to glDrawElements, so getCArray hands the backend
+            // the model's own indices without a copy and without an upload.
+            Array<uint> uintIndex = index as Array<uint>;
+            if (uintIndex != null)
+            {
+                sendIndices(primitive, uintIndex);
+                return;
+            }
+
+            sendIndicesUInt(primitive, index.size(), toUIntIndexArray<T>(index));
+        }
+
+        /**
+          Draws indexed geometry with 32 bit client indices supplied by the
+          caller.
+        */
+        public void sendIndices(Primitive primitive, Array<uint> index)
+        {
+            Debug.debugAssertM(currentFramebufferComplete(), "Incomplete Framebuffer");
+
+            if (backend == null || state.vertexArray == null)
+            {
+                return;
+            }
+
+            if (index == null)
+            {
+                throw new ArgumentNullException("index");
+            }
+
+            sendIndicesUInt(primitive, index.size(), index.getCArray());
+        }
+
+        private void sendIndicesUInt(Primitive primitive, int numIndices, uint[] values)
+        {
+            beforePrimitive();
+            runObjectShader();
+
+            VAR texCoordArray = (state.texCoordArray.Length > 0) ? state.texCoordArray[0] : null;
+            backend.DrawVAR(primitive, numIndices, state.vertexArray, state.normalArray,
+                            state.colorArray, texCoordArray, values);
+
+            afterPrimitive();
+
+            triangleCount += countTriangles(primitive, numIndices);
         }
 
         /**
@@ -2803,14 +2867,84 @@ public void describeSystem(TextOutput t)
             throw new ArgumentException("Indices must be either 8, 16, or 32 bits each.", "index");
         }
 
-        public void sendIndices<T>(Primitive primitive, Array<T> index) where T : struct
+        /**
+          Converts an index array of 8, 16, or 32 bit elements to the 32 bit
+          representation that the graphics backends use.  The array is aliased
+          rather than copied when it already holds 32 bit indices, so callers
+          must treat the returned array as read only.
+        */
+        private static uint[] toUIntIndexArray<T>(Array<T> index) where T : struct
         {
-            T[] values = new T[index.size()];
+            uint[] values = new uint[index.size()];
             for (int i = 0; i < values.Length; ++i)
             {
-                values[i] = index[i];
+                values[i] = indexToUInt(index[i]);
             }
-            sendIndices(primitive, values.Length, values);
+            return values;
+        }
+
+        private static uint[] toUIntIndexArray<T>(T[] index) where T : struct
+        {
+            // A generic T[] cannot be cast to a concrete array type, so the
+            // array reference is boxed once and type-tested at runtime.
+            object generic = index;
+
+            if (generic is uint[])
+            {
+                return (uint[])generic;
+            }
+
+            uint[] values = new uint[index.Length];
+
+            if (generic is int[])
+            {
+                int[] source = (int[])generic;
+                for (int i = 0; i < source.Length; ++i)
+                {
+                    values[i] = (uint)source[i];
+                }
+            }
+            else if (generic is ushort[])
+            {
+                ushort[] source = (ushort[])generic;
+                for (int i = 0; i < source.Length; ++i)
+                {
+                    values[i] = source[i];
+                }
+            }
+            else if (generic is short[])
+            {
+                short[] source = (short[])generic;
+                for (int i = 0; i < source.Length; ++i)
+                {
+                    values[i] = (uint)source[i];
+                }
+            }
+            else if (generic is byte[])
+            {
+                byte[] source = (byte[])generic;
+                for (int i = 0; i < source.Length; ++i)
+                {
+                    values[i] = source[i];
+                }
+            }
+            else if (generic is sbyte[])
+            {
+                sbyte[] source = (sbyte[])generic;
+                for (int i = 0; i < source.Length; ++i)
+                {
+                    values[i] = (uint)source[i];
+                }
+            }
+            else
+            {
+                for (int i = 0; i < index.Length; ++i)
+                {
+                    values[i] = indexToUInt(index[i]);
+                }
+            }
+
+            return values;
         }
 
         public void setStencilClearValue(int s)
@@ -3052,22 +3186,58 @@ public void describeSystem(TextOutput t)
 
         public void setVertexProgram(VertexProgram vp)
         {
-            state.vertexProgram = vp;
+            majStateChange();
+            if (!ReferenceEquals(vp, state.vertexProgram))
+            {
+                if (state.vertexProgram != null)
+                {
+                    state.vertexProgram.disable();
+                }
+
+                majGLStateChange();
+                if (vp != null)
+                {
+                    Debug.debugAssert(supportsVertexProgram());
+                    vp.bind();
+                }
+
+                state.vertexProgram = vp;
+            }
         }
 
         public void setVertexProgram(VertexProgram vp, GPUProgram.ArgList args)
         {
             setVertexProgram(vp);
+
+            vp.setArgs(this, args);
         }
 
         public void setPixelProgram(PixelProgram pp)
         {
-            state.pixelProgram = pp;
+            majStateChange();
+            if (!ReferenceEquals(pp, state.pixelProgram))
+            {
+                if (state.pixelProgram != null)
+                {
+                    state.pixelProgram.disable();
+                }
+
+                majGLStateChange();
+                if (pp != null)
+                {
+                    Debug.debugAssert(supportsPixelProgram());
+                    pp.bind();
+                }
+
+                state.pixelProgram = pp;
+            }
         }
 
         public void setPixelProgram(PixelProgram pp, GPUProgram.ArgList args)
         {
             setPixelProgram(pp);
+
+            pp.setArgs(this, args);
         }
 
         public double getDepthBufferValue(int x, int y)

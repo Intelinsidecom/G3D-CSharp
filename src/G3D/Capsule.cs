@@ -113,12 +113,12 @@ namespace G3D
         /** @deprecated Use volume() */
         public float getVolume()
         {
-            return
+            return (float)(
                 // Sphere volume
-                (float)Math.Pow(radius, 3) * (float)g3dmath.G3D_PI * 4 / 3 +
+                Math.Pow((double)radius, 3.0) * g3dmath.G3D_PI * 4 / 3 +
 
                 // Cylinder volume
-                (float)Math.Pow(radius, 2) * (p1 - p2).magnitude();
+                Math.Pow((double)radius, 2.0) * (double)(p1 - p2).magnitude());
         }
 
         public float volume()
@@ -129,12 +129,12 @@ namespace G3D
         /** @deprecated */
         public float getSurfaceArea()
         {
-            return
+            return (float)(
                 // Sphere area
-                (float)Math.Pow(radius, 2) * 4 * (float)g3dmath.G3D_PI +
+                Math.Pow((double)radius, 2.0) * 4 * g3dmath.G3D_PI +
 
                 // Cylinder area
-                2 * (float)g3dmath.G3D_PI * (float)radius * (p1 - p2).magnitude();
+                2 * g3dmath.G3D_PI * (double)radius * (double)(p1 - p2).magnitude());
         }
 
         public float area()

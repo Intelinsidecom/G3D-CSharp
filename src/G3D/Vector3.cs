@@ -258,12 +258,12 @@ namespace G3D
 
         public bool isZero()
         {
-            return x == 0.0f && y == 0.0f && z == 0.0f;
+            return g3dmath.fuzzyEq(squaredMagnitude(), 0.0f);
         }
 
         public bool isUnit()
         {
-            return squaredMagnitude() == 1.0f;
+            return g3dmath.fuzzyEq(squaredMagnitude(), 1.0f);
         }
 
         public Axis primaryAxis()
@@ -328,13 +328,9 @@ namespace G3D
 
         public Vector3 unitCross(Vector3 rkVector)
         {
-            Vector3 c = cross(rkVector);
-            float m = length() * rkVector.length();
-            if (m > 0.0f)
-            {
-                return c / m;
-            }
-            return Vector3.zero();
+            Vector3 kCross = cross(rkVector);
+            kCross.unitize(1e-06f);
+            return kCross;
         }
 
         public Matrix3 cross()
@@ -395,8 +391,8 @@ namespace G3D
 
         public static Vector3 cosRandom(Vector3 normal)
         {
-            float e1 = (float)g3dmath.random(0.0, 1.0);
-            float e2 = (float)g3dmath.random(0.0, 1.0);
+            double e1 = g3dmath.random(0.0, 1.0);
+            double e2 = g3dmath.random(0.0, 1.0);
             double theta = Math.Acos(Math.Sqrt(e1));
             double phi = 2.0 * g3dmath.G3D_PI * e2;
 

@@ -9,11 +9,103 @@ namespace G3D.OpenGL
     {
         private readonly GLControl control;
 
+        public event Action<GEvent> InputEvent;
+
         public OpenGLWindow()
         {
             control = new GLControl(new GraphicsMode(32, 24, 8, 0));
             control.Dock = DockStyle.Fill;
             control.BackColor = global::System.Drawing.Color.Black;
+            control.KeyDown += onKeyDown;
+            control.KeyUp += onKeyUp;
+            control.MouseDown += onMouseDown;
+            control.MouseUp += onMouseUp;
+            control.MouseMove += onMouseMove;
+            control.MouseWheel += onMouseWheel;
+        }
+
+        private void raiseInputEvent(GEvent e)
+        {
+            Action<GEvent> handler = InputEvent;
+            if (handler != null)
+            {
+                handler(e);
+            }
+        }
+
+        /**
+          WinForms reports virtual-key codes; UserInput expects the SDL 1.2
+          codes the original used, which match ASCII for the printable keys.
+        */
+        private static int translateKey(Keys key, bool shiftDown)
+        {
+            Keys code = key & Keys.KeyCode;
+            if (code >= Keys.A && code <= Keys.Z)
+            {
+                int letter = (int)code;
+                return shiftDown ? letter : letter + 32;
+            }
+            return (int)code;
+        }
+
+        private static int translateMouseButton(MouseButtons button)
+        {
+            switch (button)
+            {
+                case MouseButtons.Left: return 1;
+                case MouseButtons.Middle: return 2;
+                case MouseButtons.Right: return 3;
+                case MouseButtons.XButton1: return 4;
+                case MouseButtons.XButton2: return 5;
+                default: return 0;
+            }
+        }
+
+        private void onKeyDown(object sender, KeyEventArgs e)
+        {
+            GEvent evt = new GEvent(GEventType.KEY_DOWN);
+            evt.key = translateKey(e.KeyCode, e.Shift);
+            raiseInputEvent(evt);
+        }
+
+        private void onKeyUp(object sender, KeyEventArgs e)
+        {
+            GEvent evt = new GEvent(GEventType.KEY_UP);
+            evt.key = translateKey(e.KeyCode, e.Shift);
+            raiseInputEvent(evt);
+        }
+
+        private void onMouseDown(object sender, MouseEventArgs e)
+        {
+            GEvent evt = new GEvent(GEventType.MOUSE_DOWN);
+            evt.mouseButton = translateMouseButton(e.Button);
+            evt.mouseX = e.X;
+            evt.mouseY = e.Y;
+            raiseInputEvent(evt);
+        }
+
+        private void onMouseUp(object sender, MouseEventArgs e)
+        {
+            GEvent evt = new GEvent(GEventType.MOUSE_UP);
+            evt.mouseButton = translateMouseButton(e.Button);
+            evt.mouseX = e.X;
+            evt.mouseY = e.Y;
+            raiseInputEvent(evt);
+        }
+
+        private void onMouseMove(object sender, MouseEventArgs e)
+        {
+            GEvent evt = new GEvent(GEventType.MOUSE_MOVE);
+            evt.mouseX = e.X;
+            evt.mouseY = e.Y;
+            raiseInputEvent(evt);
+        }
+
+        private void onMouseWheel(object sender, MouseEventArgs e)
+        {
+            GEvent evt = new GEvent(GEventType.MOUSE_WHEEL);
+            evt.wheelDelta = e.Delta;
+            raiseInputEvent(evt);
         }
 
         public Control Control
@@ -50,11 +142,28 @@ namespace G3D.OpenGL
 
         public void MakeCurrent()
         {
+            // The host form can be closed while the frame loop is still
+            // unwinding.  Making a destroyed context current faults inside
+            // OpenTK, so the disposed state is checked first.  IsHandleCreated
+            // is deliberately not checked: a GLControl that has not been
+            // parented to a form yet has no handle, and OpenTK creates the
+            // graphics context on demand when MakeCurrent runs.
+            if (control.IsDisposed)
+            {
+                throw new ObjectDisposedException("OpenGLWindow",
+                    "The graphics control has been disposed; the host window was closed while GLG3D was still running.");
+            }
             control.MakeCurrent();
         }
 
         public void Present()
         {
+            // The window can be disposed by the host while a frame is still in
+            // flight; presenting to a destroyed context is a no-op.
+            if (control.IsDisposed || !control.IsHandleCreated)
+            {
+                return;
+            }
             control.SwapBuffers();
         }
 
@@ -66,6 +175,14 @@ namespace G3D.OpenGL
         public void Dispose()
         {
             control.Dispose();
+        }
+
+        /** True once the hosted GLControl has been disposed.  Backend calls
+            issued after that point still resolve their entry points but fault,
+            so the backend checks this before touching the context. */
+        public bool Disposed
+        {
+            get { return control.IsDisposed; }
         }
 
         // For describeSystem

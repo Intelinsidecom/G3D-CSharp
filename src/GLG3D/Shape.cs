@@ -176,8 +176,10 @@ namespace G3D
             }
             _bspTree.balance();
 
-            Box box;
-            MeshAlg.computeBounds(_vertexArray, out box, out _boundingSphere);
+            Box box = new Box();
+            Sphere sphere = new Sphere();
+            MeshAlg.computeBounds(_vertexArray, ref box, ref sphere);
+            _boundingSphere = sphere;
             _boundingSphere.getBounds(out _boundingAABox);
 
             _hasTree = true;

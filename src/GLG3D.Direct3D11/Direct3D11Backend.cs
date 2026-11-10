@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using SharpDX.D3DCompiler;
@@ -24,6 +24,25 @@ namespace G3D.Direct3D11
             public float S, T, U, V;
         }
 
+        private sealed class VarDrawState
+        {
+            public VAR VertexArray;
+            public VAR NormalArray;
+            public VAR ColorArray;
+            public VAR TexCoordArray;
+            public VAR IndexArray;
+            public int VertexVersion = -1;
+            public int NormalVersion = -1;
+            public int ColorVersion = -1;
+            public int TexCoordVersion = -1;
+            public int IndexVersion = -1;
+            public SharpDX.Direct3D11.Buffer VertexBuffer;
+            public SharpDX.Direct3D11.Buffer IndexBuffer;
+            public int NumVertices;
+            public int NumIndices;
+            public bool Indexed;
+        }
+
         private sealed class TextureSamplerParameters
         {
             public Texture.WrapMode WrapS = Texture.WrapMode.TILE;
@@ -47,6 +66,10 @@ namespace G3D.Direct3D11
         private readonly Dictionary<int, Direct3D11Buffer> buffers = new Dictionary<int, Direct3D11Buffer>();
         private readonly Dictionary<int, Direct3D11Renderbuffer> renderbuffers = new Dictionary<int, Direct3D11Renderbuffer>();
         private readonly Dictionary<int, Direct3D11Program> programs = new Dictionary<int, Direct3D11Program>();
+        private readonly Dictionary<VAR, VarDrawState> varDrawStates = new Dictionary<VAR, VarDrawState>();
+
+        private VAR clientIndexVAR;
+        private int clientIndexVARCapacity;
         private readonly Dictionary<int, Direct3D11Milestone> milestones = new Dictionary<int, Direct3D11Milestone>();
         private int nextTextureId = 1;
         private int nextFramebufferId = 1;
@@ -69,8 +92,13 @@ namespace G3D.Direct3D11
         private Matrix4 projection = Matrix4.identity();
         private Matrix4 modelView = Matrix4.identity();
         private Matrix4 cameraToWorld = Matrix4.identity();
+        // The inverse of the camera-to-world matrix changes only when the camera
+        // changes, so it is computed once per camera update instead of once per
+        // draw (a 4x4 adjugate inverse dominates the draw submission cost).
+        private Matrix4 cameraToWorldInverseCached = Matrix4.identity();
+        private bool cameraToWorldInverseValid = true;
         private Matrix4 lightMvp = Matrix4.identity();
-        private Matrix4 textureMatrix = Matrix4.identity();
+        private Matrix4[] textureMatrices = new Matrix4[G3D.GLCaps.G3D_MAX_TEXTURE_UNITS];
         private Color4 ambient = new Color4(0.1f, 0.1f, 0.1f, 1.0f);
         private Color3 specular = Color3.white();
         private float shininess = 32.0f;
@@ -85,6 +113,7 @@ namespace G3D.Direct3D11
         private readonly Dictionary<int, List<byte[]>> textureLevelData = new Dictionary<int, List<byte[]>>();
         private readonly Dictionary<int, TextureSamplerParameters> textureSamplerParameters = new Dictionary<int, TextureSamplerParameters>();
         private readonly float[] textureLodBias = new float[G3D.GLCaps.G3D_MAX_TEXTURE_UNITS];
+        private CubeMapTexGenMode[] cubeTexGenModes = new CubeMapTexGenMode[G3D.GLCaps.G3D_MAX_TEXTURE_UNITS];
         private int currentTextureID;
         private readonly List<ImmediateVertex> immediateVertices = new List<ImmediateVertex>();
         private ImmediateVertex currentVertex;
@@ -95,21 +124,48 @@ namespace G3D.Direct3D11
         private VertexShader fixedVertexShader;
         private PixelShader fixedPixelShader;
         private InputLayout fixedInputLayout;
-        private SharpDX.Direct3D11.Buffer constantsBuffer;
-        private SharpDX.Direct3D11.Buffer immediateVertexBuffer;
+        // Rotating pools of dynamic buffers.  Mapping a dynamic buffer whose
+        // memory a previous frame is still reading costs about 0.1ms on some
+        // drivers, so the fixed-function constant and immediate-mode vertex
+        // buffers rotate through a small pool (four in-flight draws).
+        private readonly SharpDX.Direct3D11.Buffer[] constantsBuffers = new SharpDX.Direct3D11.Buffer[4];
+        private readonly SharpDX.Direct3D11.Buffer[] immediateVertexBuffers = new SharpDX.Direct3D11.Buffer[4];
+        private int fixedFunctionBufferIndex;
+        private const int FixedFunctionBufferCount = 4;
+        private void advanceFixedFunctionBuffers() { fixedFunctionBufferIndex = (fixedFunctionBufferIndex + 1) % FixedFunctionBufferCount; }
+        private SharpDX.Direct3D11.Buffer constantsBuffer
+        {
+            get { return constantsBuffers[fixedFunctionBufferIndex]; }
+            set { constantsBuffers[fixedFunctionBufferIndex] = value; }
+        }
+        private SharpDX.Direct3D11.Buffer constantsReadback;
+        private SharpDX.Direct3D11.Buffer immediateVertexBuffer
+        {
+            get { return immediateVertexBuffers[fixedFunctionBufferIndex]; }
+            set { immediateVertexBuffers[fixedFunctionBufferIndex] = value; }
+        }
+        // Scratch buffers reused across draws so the draw path allocates nothing
+        // per call.
+        private byte[] immediatePacked;
+        private readonly float[] valueScratch = new float[16];
+        private readonly float[] constantsPacked = new float[244];
         private SharpDX.Direct3D11.Buffer[] attrBuffers = new SharpDX.Direct3D11.Buffer[4];
         private SharpDX.Direct3D11.Buffer attrIndexBuffer;
         private int attrIndexBufferSize;
         private int fixedTextureUnit = -1;
+        private int shadowTextureUnit = -1;
+        private bool shadowEnabled;
         private DepthStencilState depthState;
         private BlendState blendState;
         private RasterizerState rasterizerState;
+        private RenderDevice.RenderMode renderModeState = RenderDevice.RenderMode.RENDER_SOLID;
+        private RenderDevice.CullFace cullFaceState = RenderDevice.CullFace.CULL_BACK;
+        private double polygonOffset;
         private bool colorWrite = true;
         private bool alphaWrite = true;
         private bool depthWrite = true;
         private RenderDevice.DepthTest depthTest = RenderDevice.DepthTest.DEPTH_LESS;
         private float viewportHeight = 1.0f;
-        private float targetHeight = 1.0f;
         private RenderDevice.BlendFunc blendSrc = RenderDevice.BlendFunc.BLEND_ONE;
         private RenderDevice.BlendFunc blendDst = RenderDevice.BlendFunc.BLEND_ZERO;
         private RenderDevice.BlendEq blendEquation = RenderDevice.BlendEq.BLENDEQ_ADD;
@@ -118,11 +174,16 @@ namespace G3D.Direct3D11
         {
             caps = new BackendCaps();
             for (int i = 0; i < lights.Length; ++i) lights[i] = new GLight();
+            for (int i = 0; i < textureMatrices.Length; ++i) textureMatrices[i] = Matrix4.identity();
         }
 
         public GraphicsBackendKind Kind { get { return GraphicsBackendKind.Direct3D11; } }
         public string Description { get { return string.Format("Direct3D 11 {0}", caps.Version); } }
         public BackendCaps Caps { get { return caps; } }
+
+        public static bool EnableDebugLayer { get; set; }
+
+        public bool DebugLayerActive { get; private set; }
 
         public void Initialize(IGraphicsWindow graphicsWindow)
         {
@@ -137,7 +198,25 @@ namespace G3D.Direct3D11
             description.SampleDescription = new SampleDescription(1, 0);
             description.SwapEffect = SwapEffect.Discard;
             description.Usage = Usage.RenderTargetOutput;
-            Device.CreateWithSwapChain(SharpDX.Direct3D.DriverType.Hardware, DeviceCreationFlags.BgraSupport, description, out device, out swapChain);
+            DeviceCreationFlags creationFlags = DeviceCreationFlags.BgraSupport;
+            if (EnableDebugLayer)
+            {
+                creationFlags |= DeviceCreationFlags.Debug;
+            }
+            try
+            {
+                Device.CreateWithSwapChain(SharpDX.Direct3D.DriverType.Hardware, creationFlags, description, out device, out swapChain);
+                DebugLayerActive = (creationFlags & DeviceCreationFlags.Debug) == DeviceCreationFlags.Debug;
+            }
+            catch (SharpDXException)
+            {
+                if ((creationFlags & DeviceCreationFlags.Debug) == 0)
+                {
+                    throw;
+                }
+                DebugLayerActive = false;
+                Device.CreateWithSwapChain(SharpDX.Direct3D.DriverType.Hardware, DeviceCreationFlags.BgraSupport, description, out device, out swapChain);
+            }
             context = device.ImmediateContext;
             CreateRenderTarget();
             CreateFixedFunctionPipeline();
@@ -147,7 +226,7 @@ namespace G3D.Direct3D11
             caps.MaxTextureCoords = caps.MaxTextureUnits;
             caps.MaxLights = 1;
             caps.MaxColorAttachments = 1;
-            caps.SupportsShadows = false;
+            caps.SupportsShadows = true;
             caps.SupportsCubeMaps = true;
             caps.SupportsStencil = true;
             caps.SupportsTwoSidedStencil = true;
@@ -161,7 +240,7 @@ namespace G3D.Direct3D11
             caps.SupportsTextureLODBias = true;
             caps.SupportsGenericVertexAttributes = false;
             caps.SupportsStereoDrawBuffers = false;
-            caps.SupportsReflectionMaps = false;
+            caps.SupportsReflectionMaps = true;
             caps.HasBug_glMultiTexCoord3fvARB = false;
             caps.HasBug_normalMapTexGen = false;
             caps.HasBug_redBlueMipmapSwap = false;
@@ -179,6 +258,67 @@ namespace G3D.Direct3D11
             caps.ShaderLanguages = new List<GraphicsShaderLanguage>();
             caps.ShaderLanguages.Add(GraphicsShaderLanguage.HLSL);
             G3D.GLCaps.setBackend(this);
+        }
+
+        public string[] DrainDeviceMessages()
+        {
+            if (device == null)
+            {
+                return new string[0];
+            }
+            SharpDX.Direct3D11.InfoQueue infoQueue = device.QueryInterfaceOrNull<SharpDX.Direct3D11.InfoQueue>();
+            if (infoQueue == null)
+            {
+                return new string[0];
+            }
+            try
+            {
+                List<string> messages = new List<string>();
+                long count = infoQueue.NumStoredMessages;
+                for (long i = 0; i < count; ++i)
+                {
+                    SharpDX.Direct3D11.Message message = infoQueue.GetMessage(i);
+                    messages.Add(string.Format("{0}: {1}", message.Severity, message.Description));
+                }
+                infoQueue.ClearStoredMessages();
+                return messages.ToArray();
+            }
+            finally
+            {
+                infoQueue.Dispose();
+            }
+        }
+
+        public byte[] ReadFixedFunctionConstants()
+        {
+            if (device == null || context == null || constantsBuffer == null)
+            {
+                return null;
+            }
+            int size = constantsBuffer.Description.SizeInBytes;
+            if (constantsReadback == null || constantsReadback.Description.SizeInBytes != size)
+            {
+                if (constantsReadback != null) constantsReadback.Dispose();
+                constantsReadback = new SharpDX.Direct3D11.Buffer(device, new BufferDescription
+                {
+                    SizeInBytes = size,
+                    Usage = ResourceUsage.Staging,
+                    BindFlags = BindFlags.None,
+                    CpuAccessFlags = CpuAccessFlags.Read
+                });
+            }
+            context.CopyResource(constantsBuffer, constantsReadback);
+            DataBox box = context.MapSubresource(constantsReadback, 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None);
+            try
+            {
+                byte[] data = new byte[size];
+                Marshal.Copy(box.DataPointer, data, 0, size);
+                return data;
+            }
+            finally
+            {
+                context.UnmapSubresource(constantsReadback, 0);
+            }
         }
 
         private static string getAdapterDescription()
@@ -224,24 +364,28 @@ namespace G3D.Direct3D11
         {
             TextureFormat.screenDepthBitsProvider = delegate { return 24; };
             TextureFormat.screenStencilBitsProvider = delegate { return 8; };
-            using (Texture2D backBuffer = swapChain.GetBackBuffer<Texture2D>(0)) renderTargetView = new RenderTargetView(device, backBuffer);
-            Direct3D11Texture depth = new Direct3D11Texture();
-            depth.Width = window.Width;
-            depth.Height = window.Height;
-            targetHeight = Math.Max(1.0f, window.Height);
-            depth.IsDepth = true;
-            depth.Resource = new Texture2D(device, new Texture2DDescription {
-                Width = Math.Max(1, window.Width), Height = Math.Max(1, window.Height), MipLevels = 1,
-                ArraySize = 1, Format = DxgiFormat.D32_Float, SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Default, BindFlags = BindFlags.DepthStencil
-            });
-            depth.DepthView = new DepthStencilView(device, depth.Resource);
-            defaultDepthView = depth.DepthView;
-            defaultDepthResource = depth.Resource;
-            activeDepthView = defaultDepthView;
-            activeDepthResource = defaultDepthResource;
-            activeColorView = renderTargetView;
-            context.OutputMerger.SetRenderTargets(activeDepthView, activeColorView);
+            using (Texture2D backBuffer = swapChain.GetBackBuffer<Texture2D>(0))
+            {
+                renderTargetView = new RenderTargetView(device, backBuffer);
+                int width = backBuffer.Description.Width;
+                int height = backBuffer.Description.Height;
+                Direct3D11Texture depth = new Direct3D11Texture();
+                depth.Width = width;
+                depth.Height = height;
+                depth.IsDepth = true;
+                depth.Resource = new Texture2D(device, new Texture2DDescription {
+                    Width = width, Height = height, MipLevels = 1,
+                    ArraySize = 1, Format = DxgiFormat.D32_Float, SampleDescription = new SampleDescription(1, 0),
+                    Usage = ResourceUsage.Default, BindFlags = BindFlags.DepthStencil
+                });
+                depth.DepthView = new DepthStencilView(device, depth.Resource);
+                defaultDepthView = depth.DepthView;
+                defaultDepthResource = depth.Resource;
+                activeDepthView = defaultDepthView;
+                activeDepthResource = defaultDepthResource;
+                activeColorView = renderTargetView;
+                context.OutputMerger.SetRenderTargets(activeDepthView, activeColorView);
+            }
         }
 
         private void CreateFixedFunctionPipeline()
@@ -258,8 +402,11 @@ namespace G3D.Direct3D11
                 new InputElement("TEXCOORD", 0, DxgiFormat.R32G32B32A32_Float, 48, 0)
             };
             fixedInputLayout = new InputLayout(device, vs.Bytecode, elements);
-            constantsBuffer = new SharpDX.Direct3D11.Buffer(device, new BufferDescription { SizeInBytes = 912, Usage = ResourceUsage.Dynamic, BindFlags = BindFlags.ConstantBuffer, CpuAccessFlags = CpuAccessFlags.Write });
-            immediateVertexBuffer = new SharpDX.Direct3D11.Buffer(device, new BufferDescription { SizeInBytes = 1024 * 64, Usage = ResourceUsage.Dynamic, BindFlags = BindFlags.VertexBuffer, CpuAccessFlags = CpuAccessFlags.Write });
+            for (int b = 0; b < FixedFunctionBufferCount; ++b)
+            {
+                constantsBuffers[b] = new SharpDX.Direct3D11.Buffer(device, new BufferDescription { SizeInBytes = 976, Usage = ResourceUsage.Dynamic, BindFlags = BindFlags.ConstantBuffer, CpuAccessFlags = CpuAccessFlags.Write });
+                immediateVertexBuffers[b] = new SharpDX.Direct3D11.Buffer(device, new BufferDescription { SizeInBytes = 1024 * 64, Usage = ResourceUsage.Dynamic, BindFlags = BindFlags.VertexBuffer, CpuAccessFlags = CpuAccessFlags.Write });
+            }
             context.InputAssembler.InputLayout = fixedInputLayout;
             context.VertexShader.Set(fixedVertexShader);
             context.PixelShader.Set(fixedPixelShader);
@@ -294,12 +441,22 @@ namespace G3D.Direct3D11
             foreach (Direct3D11Framebuffer f in framebuffers.Values) f.Dispose();
             foreach (Direct3D11Buffer b in buffers.Values) b.Dispose();
             foreach (Direct3D11Program p in programs.Values) p.Dispose();
+            foreach (VarDrawState drawState in varDrawStates.Values)
+            {
+                if (drawState.VertexBuffer != null) drawState.VertexBuffer.Dispose();
+                if (drawState.IndexBuffer != null) drawState.IndexBuffer.Dispose();
+            }
+            varDrawStates.Clear();
             textures.Clear(); framebuffers.Clear(); buffers.Clear(); programs.Clear();
             if (fixedInputLayout != null) fixedInputLayout.Dispose();
             if (fixedVertexShader != null) fixedVertexShader.Dispose();
             if (fixedPixelShader != null) fixedPixelShader.Dispose();
-            if (constantsBuffer != null) constantsBuffer.Dispose();
-            if (immediateVertexBuffer != null) immediateVertexBuffer.Dispose();
+            for (int b = 0; b < FixedFunctionBufferCount; ++b)
+            {
+                if (constantsBuffers[b] != null) constantsBuffers[b].Dispose();
+                if (immediateVertexBuffers[b] != null) immediateVertexBuffers[b].Dispose();
+            }
+            if (constantsReadback != null) constantsReadback.Dispose();
             foreach (SharpDX.Direct3D11.Buffer b in attrBuffers) if (b != null) b.Dispose();
             if (attrIndexBuffer != null) attrIndexBuffer.Dispose();
             if (defaultDepthView != null) defaultDepthView.Dispose();
@@ -316,11 +473,23 @@ namespace G3D.Direct3D11
             width = Math.Max(1, width); height = Math.Max(1, height);
             Direct3D11Texture t = new Direct3D11Texture();
             t.Id = nextTextureId++; t.Format = format; t.Width = width; t.Height = height; t.DepthMode = depthReadMode; t.IsDepth = format.getIsDepth();
-            DxgiFormat dx = t.IsDepth ? DxgiFormat.D32_Float : TextureFormatMap.ToDXGI(format);
-            t.Resource = new Texture2D(device, new Texture2DDescription { Width = width, Height = height, MipLevels = t.IsDepth ? 1 : mipLevelCount(width, height), ArraySize = 1, Format = dx, SampleDescription = new SampleDescription(1, 0), Usage = ResourceUsage.Default, BindFlags = t.IsDepth ? BindFlags.DepthStencil : (BindFlags.ShaderResource | BindFlags.RenderTarget) });
+            DxgiFormat dx = t.IsDepth ? DxgiFormat.R32_Typeless : TextureFormatMap.ToDXGI(format);
+            t.Resource = new Texture2D(device, new Texture2DDescription { Width = width, Height = height, MipLevels = t.IsDepth ? 1 : mipLevelCount(width, height), ArraySize = 1, Format = dx, SampleDescription = new SampleDescription(1, 0), Usage = ResourceUsage.Default, BindFlags = t.IsDepth ? (BindFlags.DepthStencil | BindFlags.ShaderResource) : (BindFlags.ShaderResource | BindFlags.RenderTarget) });
             if (t.IsDepth)
             {
-                t.DepthView = new DepthStencilView(device, t.Resource);
+                t.DepthView = new DepthStencilView(device, t.Resource, new DepthStencilViewDescription
+                {
+                    Format = DxgiFormat.D32_Float,
+                    Dimension = DepthStencilViewDimension.Texture2D,
+                    Texture2D = new DepthStencilViewDescription.Texture2DResource { MipSlice = 0 }
+                });
+                t.ComparisonView = new ShaderResourceView(device, t.Resource, new ShaderResourceViewDescription
+                {
+                    Format = DxgiFormat.R32_Float,
+                    Dimension = ShaderResourceViewDimension.Texture2D,
+                    Texture2D = new ShaderResourceViewDescription.Texture2DResource { MostDetailedMip = 0, MipLevels = 1 }
+                });
+                t.ComparisonSampler = CreateSampler(depthReadMode, true);
             }
             else
             {
@@ -361,12 +530,17 @@ namespace G3D.Direct3D11
             if (view == null)
             {
                 throw new NotSupportedException(
-                    "G3D.Direct3D11: a depth texture cannot be sampled because Direct3D 11 does not allow " +
-                    "a resource to be bound for both depth-stencil and shader-resource use.");
+                    "G3D.Direct3D11: the texture cannot be sampled because it has no shader resource view.");
             }
             context.VertexShader.SetShaderResource(textureUnit, view);
             context.PixelShader.SetShaderResource(textureUnit, view);
-            if (t.Sampler != null)
+            if (t.IsDepth)
+            {
+                if (t.ComparisonSampler == null) t.ComparisonSampler = CreateSampler(t.DepthMode, true);
+                context.VertexShader.SetSampler(textureUnit, t.ComparisonSampler);
+                context.PixelShader.SetSampler(textureUnit, t.ComparisonSampler);
+            }
+            else if (t.Sampler != null)
             {
                 context.VertexShader.SetSampler(textureUnit, t.Sampler);
                 context.PixelShader.SetSampler(textureUnit, t.Sampler);
@@ -385,9 +559,14 @@ namespace G3D.Direct3D11
         }
         public void ConfigureCubeMapTexGen(int textureUnit, CubeMapTexGenMode mode)
         {
-            throw new NotSupportedException(
-                "G3D.Direct3D11: cube map texture coordinate generation is a fixed-function OpenGL feature. " +
-                "Compute the reflection or eye-line vector in a shader and sample the cube map there.");
+            // G3D uses fixed-function GL_NORMAL_MAP / GL_REFLECTION_MAP texgen for cube maps.
+            // The fixed-function HLSL pipeline reproduces GL_NORMAL_MAP: the object-space normal
+            // is transformed by the unit's texture matrix and used as the cube lookup direction.
+            if (textureUnit < 0 || textureUnit >= cubeTexGenModes.Length)
+            {
+                throw new ArgumentOutOfRangeException("textureUnit");
+            }
+            cubeTexGenModes[textureUnit] = mode;
         }
         public void TexImage2D(int target, int level, TextureFormat format, int width, int height, int border, byte[] data)
         {
@@ -410,9 +589,30 @@ namespace G3D.Direct3D11
             if (level >= 0 && level < mipLevels)
             {
                 int subresource = cube ? (face * mipLevels + level) : level;
-                context.UpdateSubresource(converted, texture.Resource, subresource, 0, 0, null);
+                uploadTextureLevel(converted, texture.Resource, subresource, width);
             }
             recordTextureLevel(texture.Id, level, face, converted);
+        }
+
+        /**
+          Uploads one texture level with an explicit row pitch.  UpdateSubresource
+          without a DataBox derives the pitch from the resource's base width, which
+          is wrong for mip levels smaller than the base level.
+          */
+        private void uploadTextureLevel(byte[] data, Texture2D resource, int subresource, int levelWidth)
+        {
+            int bytes = bytesPerPixel(resource.Description.Format);
+            IntPtr pointer = Marshal.AllocHGlobal(data.Length);
+            try
+            {
+                Marshal.Copy(data, 0, pointer, data.Length);
+                DataBox box = new DataBox(pointer, Math.Max(1, levelWidth) * bytes, data.Length);
+                context.UpdateSubresource(box, resource, subresource);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(pointer);
+            }
         }
         private void ensureCubeResource(Direct3D11Texture texture)
         {
@@ -595,7 +795,7 @@ namespace G3D.Direct3D11
                         {
                             destination = downsample(previousFace, faceWidth, faceHeight, cubeBytes);
                         }
-                        context.UpdateSubresource(destination, texture.Resource, face * cubeMipLevels + level, 0, 0, null);
+                        uploadTextureLevel(destination, texture.Resource, face * cubeMipLevels + level, Math.Max(1, texture.Width >> level));
                         recordTextureLevel(texture.Id, level, face, destination);
                         previousFace = destination;
                         faceWidth = Math.Max(1, faceWidth / 2);
@@ -631,7 +831,7 @@ namespace G3D.Direct3D11
                 {
                     destination = downsample(previous, width, height, bytes);
                 }
-                context.UpdateSubresource(destination, texture.Resource, level, 0, 0, null);
+                uploadTextureLevel(destination, texture.Resource, level, Math.Max(1, texture.Width >> level));
                 recordTextureLevel(texture.Id, level, destination);
                 previous = destination;
                 width = Math.Max(1, width / 2);
@@ -747,9 +947,10 @@ namespace G3D.Direct3D11
             d.AddressW = TextureAddressMode.Clamp;
             d.ComparisonFunction = Comparison.Never;
             d.MipLodBias = parameters.LodBias;
+            bool mipmaps = usesMipmaps(parameters.MinFilter);
             d.MinimumLod = 0.0f;
-            d.MaximumLod = float.MaxValue;
-            if (parameters.MaxAnisotropy > 1.0f)
+            d.MaximumLod = mipmaps ? float.MaxValue : 0.0f;
+            if (mipmaps && parameters.MaxAnisotropy > 1.0f)
             {
                 d.Filter = Filter.Anisotropic;
                 d.MaximumAnisotropy = (int)parameters.MaxAnisotropy;
@@ -759,6 +960,12 @@ namespace G3D.Direct3D11
                 d.Filter = filterFor(parameters.MinFilter, parameters.MagFilter);
             }
             return new SamplerState(device, d);
+        }
+        private static bool usesMipmaps(Texture.InterpolateMode mode)
+        {
+            return mode == Texture.InterpolateMode.NEAREST_MIPMAP ||
+                   mode == Texture.InterpolateMode.BILINEAR_MIPMAP ||
+                   mode == Texture.InterpolateMode.TRILINEAR_MIPMAP;
         }
         private static TextureAddressMode wrapAddressMode(Texture.WrapMode wrap)
         {
@@ -799,9 +1006,27 @@ namespace G3D.Direct3D11
         }
         public void ConfigureShadowMap(int textureUnit, Matrix4 lightMVP, Matrix4 cameraToWorldMatrixInverse, int textureID, Texture.DepthReadMode mode)
         {
-            throw new NotSupportedException(
-                "G3D.Direct3D11: shadow maps are not supported because Direct3D 11 does not allow a depth " +
-                "texture to be sampled; the shadow map would have to be rendered into a sampled float texture.");
+            Direct3D11Texture texture;
+            if (!textures.TryGetValue(textureID, out texture))
+            {
+                throw new InvalidOperationException("G3D.Direct3D11: the shadow map texture is not allocated.");
+            }
+            if (texture.ComparisonView == null)
+            {
+                throw new InvalidOperationException("G3D.Direct3D11: the shadow map texture cannot be sampled.");
+            }
+            if (texture.ComparisonSampler == null)
+            {
+                texture.ComparisonSampler = CreateSampler(mode, true);
+            }
+            lightMvp = lightMVP;
+            context.VertexShader.SetShaderResource(textureUnit, texture.ComparisonView);
+            context.PixelShader.SetShaderResource(textureUnit, texture.ComparisonView);
+            context.VertexShader.SetSampler(textureUnit, texture.ComparisonSampler);
+            context.PixelShader.SetSampler(textureUnit, texture.ComparisonSampler);
+            boundTextures[textureUnit] = textureID;
+            shadowTextureUnit = textureUnit;
+            shadowEnabled = true;
         }
         private SamplerState CreateSampler(Texture.DepthReadMode mode, bool comparison)
         {
@@ -811,7 +1036,15 @@ namespace G3D.Direct3D11
             d.ComparisonFunction = comparison ? (mode == Texture.DepthReadMode.DEPTH_GEQUAL ? Comparison.GreaterEqual : Comparison.LessEqual) : Comparison.Never;
             return new SamplerState(device, d);
         }
-        public void DisableShadowMap(int textureUnit) { if (fixedTextureUnit == textureUnit) fixedTextureUnit = -1; }
+        public void DisableShadowMap(int textureUnit)
+        {
+            if (shadowTextureUnit == textureUnit)
+            {
+                shadowTextureUnit = -1;
+                shadowEnabled = false;
+            }
+            if (fixedTextureUnit == textureUnit) fixedTextureUnit = -1;
+        }
         public void CopyTexImage2D(int target, int level, int x, int y, int width, int height, int border)
         {
             CopyTexSubImage2D(target, level, 0, 0, x, y, width, height);
@@ -849,16 +1082,16 @@ namespace G3D.Direct3D11
             {
                 return;
             }
-            ResourceRegion destination = new ResourceRegion
+            ResourceRegion sourceRegion = new ResourceRegion
             {
-                Left = xoffset,
-                Top = destinationY,
-                Right = xoffset + width,
-                Bottom = destinationY + height,
+                Left = x,
+                Top = sourceY,
+                Right = x + width,
+                Bottom = sourceY + height,
                 Front = 0,
                 Back = 1
             };
-            context.CopySubresourceRegion(texture.Resource, level, destination, source, 0, x, sourceY, 0);
+            context.CopySubresourceRegion(source, 0, sourceRegion, texture.Resource, level, xoffset, destinationY, 0);
         }
         public void GetTexImage(int target, int level, TextureFormat format, byte[] data)
         {
@@ -885,7 +1118,7 @@ namespace G3D.Direct3D11
             });
             try
             {
-                context.CopyResource(staging, texture.Resource);
+                context.CopyResource(texture.Resource, staging);
                 DataBox box = context.MapSubresource(staging, level, MapMode.Read, SharpDX.Direct3D11.MapFlags.None);
                 try
                 {
@@ -1232,6 +1465,42 @@ namespace G3D.Direct3D11
             }
         }
 
+        // Abstraction over NVIDIA/ARB extensions
+        public int GenAssemblyProgram(int unit)
+        {
+            throw new NotSupportedException("The Direct3D 11 backend does not support legacy ARB/NVIDIA assembly GPU programs.");
+        }
+
+        public void DeleteAssemblyProgram(int program)
+        {
+            throw new NotSupportedException("The Direct3D 11 backend does not support legacy ARB/NVIDIA assembly GPU programs.");
+        }
+
+        public void BindAssemblyProgram(int unit, int program)
+        {
+            throw new NotSupportedException("The Direct3D 11 backend does not support legacy ARB/NVIDIA assembly GPU programs.");
+        }
+
+        public void LoadAssemblyProgram(int unit, int program, string code)
+        {
+            throw new NotSupportedException("The Direct3D 11 backend does not support legacy ARB/NVIDIA assembly GPU programs.");
+        }
+
+        public void SetAssemblyProgramLocalParameter(int unit, int slot, Vector4 value)
+        {
+            throw new NotSupportedException("The Direct3D 11 backend does not support legacy ARB/NVIDIA assembly GPU programs.");
+        }
+
+        public void GetAssemblyProgramError(int unit, out int pos, out string msg)
+        {
+            throw new NotSupportedException("The Direct3D 11 backend does not support legacy ARB/NVIDIA assembly GPU programs.");
+        }
+
+        public void EnableAssemblyProgram(int unit, bool enabled)
+        {
+            throw new NotSupportedException("The Direct3D 11 backend does not support legacy ARB/NVIDIA assembly GPU programs.");
+        }
+
         private SamplerState defaultSampler;
 
         private SamplerState getDefaultSampler()
@@ -1466,7 +1735,6 @@ namespace G3D.Direct3D11
                 activeDepthView = defaultDepthView;
                 activeDepthResource = defaultDepthResource;
                 activeColorView = renderTargetView;
-                targetHeight = Math.Max(1.0f, window.Height);
                 context.OutputMerger.SetRenderTargets(activeDepthView, renderTargetView);
                 return;
             }
@@ -1476,8 +1744,62 @@ namespace G3D.Direct3D11
                 activeDepthView = f.Depth;
                 activeDepthResource = f.DepthResource;
                 activeColorView = f.Color;
-                if (f.Height > 0) targetHeight = f.Height;
+                unbindConflictingShaderResources(f.DepthResource);
                 applyRenderTargets(f);
+            }
+        }
+        private Texture2D dummyRenderTargetResource;
+        private RenderTargetView dummyRenderTargetRTV;
+
+        /**
+          Returns a small color render target the size of the framebuffer's depth
+          attachment, so a depth-only framebuffer still has a render target bound.
+          The texture is never sampled and the caller disables color writes.
+          */
+        private RenderTargetView dummyRenderTargetView(Direct3D11Framebuffer f)
+        {
+            // The render target must match the depth-stencil view's dimensions; a
+            // smaller one limits rasterization to its own size.
+            int width = activeDepthResource != null ? activeDepthResource.Description.Width : 1;
+            int height = activeDepthResource != null ? activeDepthResource.Description.Height : 1;
+            if (width < 1) width = 1;
+            if (height < 1) height = 1;
+            if (dummyRenderTargetResource == null
+                || dummyRenderTargetResource.Description.Width != width
+                || dummyRenderTargetResource.Description.Height != height)
+            {
+                if (dummyRenderTargetRTV != null) { dummyRenderTargetRTV.Dispose(); dummyRenderTargetRTV = null; }
+                if (dummyRenderTargetResource != null) { dummyRenderTargetResource.Dispose(); dummyRenderTargetResource = null; }
+                dummyRenderTargetResource = new Texture2D(device, new Texture2DDescription
+                {
+                    Width = width,
+                    Height = height,
+                    MipLevels = 1,
+                    ArraySize = 1,
+                    Format = DxgiFormat.R8G8B8A8_UNorm,
+                    SampleDescription = new SampleDescription(1, 0),
+                    Usage = ResourceUsage.Default,
+                    BindFlags = BindFlags.RenderTarget
+                });
+                dummyRenderTargetRTV = new RenderTargetView(device, dummyRenderTargetResource);
+            }
+            return dummyRenderTargetRTV;
+        }
+
+        private void unbindConflictingShaderResources(Texture2D depthResource)
+        {
+            if (depthResource == null) return;
+            List<int> conflicting = new List<int>();
+            foreach (KeyValuePair<int, int> entry in boundTextures)
+            {
+                Direct3D11Texture texture;
+                if (!textures.TryGetValue(entry.Value, out texture)) continue;
+                if (texture.Resource == depthResource) conflicting.Add(entry.Key);
+            }
+            foreach (int unit in conflicting)
+            {
+                context.VertexShader.SetShaderResource(unit, null);
+                context.PixelShader.SetShaderResource(unit, null);
             }
         }
         private void applyRenderTargets(Direct3D11Framebuffer f)
@@ -1493,9 +1815,16 @@ namespace G3D.Direct3D11
                 if (selected && i == drawBufferIndex) continue;
                 if (f.Colors[i] != null) views.Add(f.Colors[i]);
             }
-            if (drawBufferIndex < 0)
+            if (drawBufferIndex < 0 || views.Count == 0)
             {
-                context.OutputMerger.SetRenderTargets(activeDepthView, (RenderTargetView)null);
+                // Depth-only render target.  Binding zero render targets makes the
+                // output merger keep whatever render target was bound before, so the
+                // render state mismatches the depth-stencil view and the rasterizer
+                // skips most fragments (shadow maps came out mostly empty).  Bind a
+                // matching dummy color target alongside the depth-stencil view; the
+                // application disables color writes or never reads the target, so it
+                // has no visible effect.
+                context.OutputMerger.SetRenderTargets(activeDepthView, dummyRenderTargetView(f));
                 return;
             }
             context.OutputMerger.SetRenderTargets(activeDepthView, views.ToArray());
@@ -1644,19 +1973,33 @@ namespace G3D.Direct3D11
         private void drawVertexList(List<ImmediateVertex> vertices, RenderDevice.Primitive primitive)
         {
             if (vertices.Count == 0) return;
+            advanceFixedFunctionBuffers();
             int stride = 64; int bytes = vertices.Count * stride;
             if (bytes > immediateVertexBuffer.Description.SizeInBytes) { immediateVertexBuffer.Dispose(); immediateVertexBuffer = new SharpDX.Direct3D11.Buffer(device, new BufferDescription { SizeInBytes = Math.Max(bytes, 1024), Usage = ResourceUsage.Dynamic, BindFlags = BindFlags.VertexBuffer, CpuAccessFlags = CpuAccessFlags.Write }); }
-            byte[] data = new byte[bytes]; int at = 0;
+            if (immediatePacked == null || immediatePacked.Length < bytes) { immediatePacked = new byte[bytes]; }
+            byte[] data = immediatePacked; int at = 0;
             foreach (ImmediateVertex v in vertices)
             {
-                float[] values = new float[] { v.X, v.Y, v.Z, v.Nx, v.Ny, v.Nz, 0.0f, 0.0f, v.R, v.G, v.B, v.A, v.S, v.T, v.U, v.V };
-                foreach (float value in values) { byte[] bytesValue = BitConverter.GetBytes(value); Array.Copy(bytesValue, 0, data, at, 4); at += 4; }
+                float[] values = valueScratch;
+                values[0] = v.X; values[1] = v.Y; values[2] = v.Z;
+                values[3] = v.Nx; values[4] = v.Ny; values[5] = v.Nz;
+                values[6] = 0.0f; values[7] = 0.0f;
+                values[8] = v.R; values[9] = v.G; values[10] = v.B; values[11] = v.A;
+                values[12] = v.S; values[13] = v.T; values[14] = v.U; values[15] = v.V;
+                global::System.Buffer.BlockCopy(values, 0, data, at, 64);
+                at += 64;
             }
             DataBox box = context.MapSubresource(immediateVertexBuffer, 0, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None); Marshal.Copy(data, 0, box.DataPointer, bytes); context.UnmapSubresource(immediateVertexBuffer, 0);
             context.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding(immediateVertexBuffer, stride, 0));
+            context.InputAssembler.InputLayout = fixedInputLayout;
+            context.VertexShader.Set(fixedVertexShader);
+            context.PixelShader.Set(fixedPixelShader);
+            // UpdateConstants binds the constant buffers after mapping them, so
+            // they stay unbound when the Map happens.
             UpdateConstants();
             context.InputAssembler.PrimitiveTopology = TopologyFor(primitive);
             context.Draw(vertices.Count, 0);
+            unbindFixedFunctionResources();
         }
 
         public void DrawVAR(RenderDevice.Primitive primitive, int numIndices, VAR vertexArray, VAR normalArray, VAR colorArray, VAR texCoordArray, VAR indexArray)
@@ -1678,6 +2021,32 @@ namespace G3D.Direct3D11
 
             // Fixed-function / no-program path: CPU-expand into the immediate vertex buffer.
             drawVarFixedFunction(primitive, numIndices, vertexArray, normalArray, colorArray, texCoordArray, indexArray);
+        }
+
+        /**
+          Direct3D 11 cannot draw from client memory, so the caller's indices are
+          staged into an index buffer.  The OpenGL backend passes them straight
+          to glDrawElements as the original RenderDevice did.
+        */
+        public void DrawVAR(RenderDevice.Primitive primitive, int numIndices, VAR vertexArray, VAR normalArray, VAR colorArray, VAR texCoordArray, uint[] index)
+        {
+            if (vertexArray == null || numIndices <= 0 || index == null) return;
+
+            if (numIndices > index.Length)
+            {
+                numIndices = index.Length;
+            }
+
+            if (clientIndexVAR == null || clientIndexVARCapacity < numIndices)
+            {
+                clientIndexVARCapacity = Math.Max(numIndices, 64);
+                clientIndexVAR = VAR.create(VAR.Type.INDEX, clientIndexVARCapacity, VAR.Usage.STREAM);
+            }
+
+            uint[] staged = new uint[numIndices];
+            Array.Copy(index, staged, numIndices);
+            clientIndexVAR.setData(staged);
+            DrawVAR(primitive, numIndices, vertexArray, normalArray, colorArray, texCoordArray, clientIndexVAR);
         }
 
         private VAR varForAttributeSlot(int slot, VAR vertexArray, VAR normalArray, VAR colorArray, VAR texCoordArray)
@@ -1712,6 +2081,21 @@ namespace G3D.Direct3D11
         private void drawVarWithProgram(RenderDevice.Primitive primitive, int numIndices, Direct3D11Program program,
             VAR vertexArray, VAR normalArray, VAR colorArray, VAR texCoordArray, VAR indexArray)
         {
+            context.VertexShader.Set(program.Vertex);
+            context.PixelShader.Set(program.Pixel);
+            context.InputAssembler.InputLayout = program.Layout;
+            foreach (Direct3D11ConstantBuffer programBuffer in program.ConstantBuffers)
+            {
+                if (programBuffer.IsVertexStage)
+                {
+                    context.VertexShader.SetConstantBuffer(programBuffer.Slot, programBuffer.Buffer);
+                }
+                else
+                {
+                    context.PixelShader.SetConstantBuffer(programBuffer.Slot, programBuffer.Buffer);
+                }
+            }
+
             List<int> drawIndices = buildDrawIndices(numIndices, vertexArray, indexArray);
 
             foreach (Direct3D11VertexAttribute attr in program.Attributes)
@@ -1831,49 +2215,241 @@ namespace G3D.Direct3D11
 
         private void drawVarFixedFunction(RenderDevice.Primitive primitive, int numIndices, VAR vertexArray, VAR normalArray, VAR colorArray, VAR texCoordArray, VAR indexArray)
         {
-            // Color and texture-coordinate arrays are not part of the fixed-function
-            // immediate vertex layout; they only take effect when a shader program
-            // binds them through drawVarWithProgram.
-            byte[] vertexData = vertexArray.getData();
-            byte[] normalData = (normalArray != null) ? normalArray.getData() : null;
-            if (vertexData == null) return;
-            int vertexStride = vertexArray.getStride();
-            int normalStride = (normalArray != null) ? normalArray.getStride() : 0;
-
-            List<int> drawIndices = buildDrawIndices(numIndices, vertexArray, indexArray);
-
-            List<ImmediateVertex> vertices = new List<ImmediateVertex>(drawIndices.Count);
-            foreach (int index in drawIndices)
+            if (vertexArray == null || numIndices <= 0)
             {
-                ImmediateVertex v = new ImmediateVertex();
-                int at = index * vertexStride;
-                v.X = BitConverter.ToSingle(vertexData, at);
-                v.Y = BitConverter.ToSingle(vertexData, at + 4);
-                v.Z = BitConverter.ToSingle(vertexData, at + 8);
-                if (normalData != null)
-                {
-                    int nat = index * normalStride;
-                    v.Nx = BitConverter.ToSingle(normalData, nat);
-                    v.Ny = BitConverter.ToSingle(normalData, nat + 4);
-                    v.Nz = BitConverter.ToSingle(normalData, nat + 8);
-                }
-                v.R = currentColor.r; v.G = currentColor.g; v.B = currentColor.b; v.A = currentColor.a;
-                v.S = currentTexCoord.x; v.T = currentTexCoord.y; v.U = currentTexCoord.z; v.V = currentTexCoord.w;
-                vertices.Add(v);
+                return;
+            }
+            advanceFixedFunctionBuffers();
+
+            VarDrawState drawState = getVarDrawState(vertexArray, normalArray, colorArray, texCoordArray, indexArray);
+            if (drawState == null || drawState.NumVertices == 0)
+            {
+                return;
             }
 
-            drawVertexList(vertices, primitive);
+            int count = drawState.Indexed
+                ? Math.Min(numIndices, drawState.NumIndices)
+                : Math.Min(numIndices, drawState.NumVertices);
+            if (count <= 0)
+            {
+                return;
+            }
+
+            context.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding(drawState.VertexBuffer, 64, 0));
+            context.InputAssembler.InputLayout = fixedInputLayout;
+            context.VertexShader.Set(fixedVertexShader);
+            context.PixelShader.Set(fixedPixelShader);
+            // UpdateConstants binds the constant buffers after mapping them, so
+            // they stay unbound when the Map happens.
+            UpdateConstants();
+            context.InputAssembler.PrimitiveTopology = TopologyFor(primitive);
+            if (drawState.Indexed)
+            {
+                context.InputAssembler.SetIndexBuffer(drawState.IndexBuffer, DxgiFormat.R32_UInt, 0);
+                context.DrawIndexed(count, 0, 0);
+            }
+            else
+            {
+                context.Draw(count, 0);
+            }
+            unbindFixedFunctionResources();
+        }
+        /**
+          Detaches the dynamic fixed-function vertex and constant buffers from
+          the pipeline.  The D3D11 runtime flushes pending GPU work whenever a
+          mapped dynamic buffer is still bound to a pipeline stage, so the
+          buffers are unbound after each draw to keep the next Map cheap.
+        */
+        private void unbindFixedFunctionResources()
+        {
+            context.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding((SharpDX.Direct3D11.Buffer)null, 0, 0));
+            context.VertexShader.SetConstantBuffer(0, (SharpDX.Direct3D11.Buffer)null);
+            context.PixelShader.SetConstantBuffer(0, (SharpDX.Direct3D11.Buffer)null);
+        }
+        private static int varVersion(VAR array)
+        {
+            return (array != null) ? array.getDataVersion() : -1;
+        }
+        private VarDrawState getVarDrawState(VAR vertexArray, VAR normalArray, VAR colorArray, VAR texCoordArray, VAR indexArray)
+        {
+            VarDrawState drawState;
+            if (!varDrawStates.TryGetValue(vertexArray, out drawState))
+            {
+                drawState = new VarDrawState();
+                varDrawStates.Add(vertexArray, drawState);
+            }
+
+            if (drawState.VertexArray != vertexArray ||
+                drawState.NormalArray != normalArray ||
+                drawState.ColorArray != colorArray ||
+                drawState.TexCoordArray != texCoordArray ||
+                drawState.IndexArray != indexArray ||
+                drawState.VertexVersion != vertexArray.getDataVersion() ||
+                drawState.NormalVersion != varVersion(normalArray) ||
+                drawState.ColorVersion != varVersion(colorArray) ||
+                drawState.TexCoordVersion != varVersion(texCoordArray) ||
+                drawState.IndexVersion != varVersion(indexArray))
+            {
+                drawState.VertexArray = vertexArray;
+                drawState.NormalArray = normalArray;
+                drawState.ColorArray = colorArray;
+                drawState.TexCoordArray = texCoordArray;
+                drawState.IndexArray = indexArray;
+                drawState.VertexVersion = vertexArray.getDataVersion();
+                drawState.NormalVersion = varVersion(normalArray);
+                drawState.ColorVersion = varVersion(colorArray);
+                drawState.TexCoordVersion = varVersion(texCoordArray);
+                drawState.IndexVersion = varVersion(indexArray);
+                rebuildVarDrawState(drawState);
+            }
+
+            return drawState;
+        }
+        private void rebuildVarDrawState(VarDrawState drawState)
+        {
+            drawState.NumVertices = 0;
+            drawState.NumIndices = 0;
+            drawState.Indexed = false;
+
+            VAR vertexArray = drawState.VertexArray;
+            byte[] vertexData = vertexArray.getData();
+            int vertexStride = vertexArray.getStride();
+            if (vertexData == null || vertexStride < 12)
+            {
+                return;
+            }
+            int numVertices = Math.Min(vertexArray.getCount(), vertexData.Length / vertexStride);
+            if (numVertices <= 0)
+            {
+                return;
+            }
+
+            byte[] normalData = (drawState.NormalArray != null) ? drawState.NormalArray.getData() : null;
+            int normalStride = (normalData != null) ? drawState.NormalArray.getStride() : 0;
+            bool useNormals = normalData != null && normalStride >= 12 && drawState.NormalArray.getFormat() == VAR.Format.FLOAT;
+
+            byte[] colorData = (drawState.ColorArray != null) ? drawState.ColorArray.getData() : null;
+            int colorStride = (colorData != null) ? drawState.ColorArray.getStride() : 0;
+            int colorComponents = (drawState.ColorArray != null) ? drawState.ColorArray.getComponentCount() : 0;
+            bool useColors = colorData != null && colorStride >= 12 && colorComponents >= 3 &&
+                             drawState.ColorArray.getFormat() == VAR.Format.FLOAT;
+
+            byte[] texCoordData = (drawState.TexCoordArray != null) ? drawState.TexCoordArray.getData() : null;
+            int texCoordStride = (texCoordData != null) ? drawState.TexCoordArray.getStride() : 0;
+            int texCoordComponents = (drawState.TexCoordArray != null) ? drawState.TexCoordArray.getComponentCount() : 0;
+            bool useTexCoords = texCoordData != null && texCoordStride >= 8 && texCoordComponents >= 2 &&
+                                drawState.TexCoordArray.getFormat() == VAR.Format.FLOAT;
+
+            float[] values = new float[numVertices * 16];
+            for (int i = 0; i < numVertices; ++i)
+            {
+                int at = i * 16;
+                int vat = i * vertexStride;
+                values[at + 0] = BitConverter.ToSingle(vertexData, vat);
+                values[at + 1] = BitConverter.ToSingle(vertexData, vat + 4);
+                values[at + 2] = BitConverter.ToSingle(vertexData, vat + 8);
+                if (useNormals)
+                {
+                    int nat = i * normalStride;
+                    values[at + 3] = BitConverter.ToSingle(normalData, nat);
+                    values[at + 4] = BitConverter.ToSingle(normalData, nat + 4);
+                    values[at + 5] = BitConverter.ToSingle(normalData, nat + 8);
+                }
+                values[at + 8] = currentColor.r;
+                values[at + 9] = currentColor.g;
+                values[at + 10] = currentColor.b;
+                values[at + 11] = currentColor.a;
+                if (useColors)
+                {
+                    int cat = i * colorStride;
+                    values[at + 8] = BitConverter.ToSingle(colorData, cat);
+                    values[at + 9] = BitConverter.ToSingle(colorData, cat + 4);
+                    values[at + 10] = BitConverter.ToSingle(colorData, cat + 8);
+                    values[at + 11] = (colorComponents >= 4 && colorStride >= 16)
+                        ? BitConverter.ToSingle(colorData, cat + 12)
+                        : 1.0f;
+                }
+                values[at + 12] = currentTexCoord.x;
+                values[at + 13] = currentTexCoord.y;
+                values[at + 14] = currentTexCoord.z;
+                values[at + 15] = currentTexCoord.w;
+                if (useTexCoords)
+                {
+                    int tat = i * texCoordStride;
+                    values[at + 12] = BitConverter.ToSingle(texCoordData, tat);
+                    values[at + 13] = BitConverter.ToSingle(texCoordData, tat + 4);
+                }
+            }
+
+            byte[] bytes = new byte[values.Length * 4];
+            global::System.Buffer.BlockCopy(values, 0, bytes, 0, bytes.Length);
+            if (drawState.VertexBuffer == null || drawState.VertexBuffer.Description.SizeInBytes < bytes.Length)
+            {
+                if (drawState.VertexBuffer != null) drawState.VertexBuffer.Dispose();
+                drawState.VertexBuffer = new SharpDX.Direct3D11.Buffer(device, new BufferDescription
+                {
+                    SizeInBytes = Math.Max(bytes.Length, 256),
+                    Usage = ResourceUsage.Dynamic,
+                    BindFlags = BindFlags.VertexBuffer,
+                    CpuAccessFlags = CpuAccessFlags.Write
+                });
+            }
+            uploadVertexBuffer(drawState.VertexBuffer, bytes);
+            drawState.NumVertices = numVertices;
+
+            if (drawState.IndexArray == null)
+            {
+                return;
+            }
+
+            byte[] indexData = drawState.IndexArray.getData();
+            if (indexData == null || indexData.Length < 4)
+            {
+                return;
+            }
+            int indexCount = Math.Min(drawState.IndexArray.getCount(), indexData.Length / 4);
+            if (indexCount <= 0)
+            {
+                return;
+            }
+            uint[] indices = new uint[indexCount];
+            for (int i = 0; i < indexCount; ++i)
+            {
+                indices[i] = (uint)BitConverter.ToInt32(indexData, i * 4);
+            }
+            byte[] indexBytes = new byte[indexCount * 4];
+            global::System.Buffer.BlockCopy(indices, 0, indexBytes, 0, indexBytes.Length);
+            if (drawState.IndexBuffer == null || drawState.IndexBuffer.Description.SizeInBytes < indexBytes.Length)
+            {
+                if (drawState.IndexBuffer != null) drawState.IndexBuffer.Dispose();
+                drawState.IndexBuffer = new SharpDX.Direct3D11.Buffer(device, new BufferDescription
+                {
+                    SizeInBytes = Math.Max(indexBytes.Length, 256),
+                    Usage = ResourceUsage.Dynamic,
+                    BindFlags = BindFlags.IndexBuffer,
+                    CpuAccessFlags = CpuAccessFlags.Write
+                });
+            }
+            uploadVertexBuffer(drawState.IndexBuffer, indexBytes);
+            drawState.Indexed = true;
+            drawState.NumIndices = indexCount;
         }
 
         private void UpdateConstants()
         {
+            // modelView = cameraToWorldInverse * objectToWorld, so the object-to-world
+            // transform is reconstructed here where both matrices are current.  It
+            // cannot be cached in SetModelViewMatrix because RenderDevice applies the
+            // model view before the camera-to-world matrix.
+            Matrix4 objectToWorldCurrent = cameraToWorld * modelView;
             Matrix4 mvp = ClipSpace.Multiply(ClipSpace.ToDirect3D(projection), modelView);
             Matrix4 light = ClipSpace.ToDirect3D(lightMvp);
-            float[] data = new float[228]; int at = 0;
+            float[] data = constantsPacked; int at = 0;
             for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) data[at++] = mvp.elt(r, c);
             for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) data[at++] = light.elt(r, c);
-            for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) data[at++] = textureMatrix.elt(r, c);
+            for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) data[at++] = textureMatrices[0].elt(r, c);
             for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) data[at++] = modelView.elt(r, c);
+            for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) data[at++] = objectToWorldCurrent.elt(r, c);
 
             Matrix3 normalMatrix = new Matrix3(
                 modelView.elt(0, 0), modelView.elt(0, 1), modelView.elt(0, 2),
@@ -1897,31 +2473,33 @@ namespace G3D.Direct3D11
             data[at++] = lightingEnabled ? 1.0f : 0.0f;
             data[at++] = fixedTextureUnit >= 0 ? 1.0f : 0.0f;
 
-            int lightCount = 0;
+            int lightMask = 0;
             for (int i = 0; i < lights.Length; ++i)
             {
-                if (lightEnabled[i]) ++lightCount;
+                if (lightEnabled[i]) lightMask |= (1 << i);
             }
-            data[at++] = 0.0f; data[at++] = 0.0f; data[at++] = 0.0f; data[at++] = lightCount;
+            data[at++] = 0.0f; data[at++] = 0.0f; data[at++] = 0.0f; data[at++] = (float)lightMask;
 
-            data[at++] = 0.0f; data[at++] = 0.0f; data[at++] = 0.0f; data[at++] = 0.0f;
+            data[at++] = shadowEnabled ? 1.0f : 0.0f; data[at++] = 0.0f; data[at++] = 0.0f; data[at++] = 0.0f;
 
             data[at++] = CombineModeIndex(combineMode);
             data[at++] = AlphaTestIndex(alphaTest);
             data[at++] = (float)alphaTestReference;
-            data[at++] = 0.0f;
+            data[at++] = updateCubeMapBinding() ? 1.0f : 0.0f;
 
-            Matrix4 cameraToWorldInverse = cameraToWorld.inverse();
+            if (!cameraToWorldInverseValid) { cameraToWorldInverseCached = cameraToWorld.inverse(); cameraToWorldInverseValid = true; }
+            Matrix4 cameraToWorldInverse = cameraToWorldInverseCached;
             for (int i = 0; i < lights.Length; ++i)
             {
                 GLight lightValue = lights[i] ?? new GLight();
-                Vector4 eyePosition = cameraToWorldInverse * lightValue.position;
+                // Disabled lights contribute nothing, so their transform is skipped.
+                Vector4 eyePosition = lightEnabled[i] ? (cameraToWorldInverse * lightValue.position) : new Vector4(0.0f, 0.0f, 0.0f, 0.0f);
                 data[at++] = eyePosition.x; data[at++] = eyePosition.y; data[at++] = eyePosition.z; data[at++] = lightValue.position.w;
             }
             for (int i = 0; i < lights.Length; ++i)
             {
                 GLight lightValue = lights[i] ?? new GLight();
-                Vector3 eyeDirection = (cameraToWorldInverse * new Vector4(lightValue.spotDirection, 0.0f)).xyz();
+                Vector3 eyeDirection = lightEnabled[i] ? (cameraToWorldInverse * new Vector4(lightValue.spotDirection, 0.0f)).xyz() : new Vector3(0.0f, 0.0f, 0.0f);
                 data[at++] = eyeDirection.x; data[at++] = eyeDirection.y; data[at++] = eyeDirection.z; data[at++] = (float)lightValue.spotCutoff;
             }
             for (int i = 0; i < lights.Length; ++i)
@@ -1940,7 +2518,55 @@ namespace G3D.Direct3D11
                 data[at++] = 0.0f;
             }
 
-            context.UpdateSubresource(data, constantsBuffer, 0, 0, 0, null);
+            {
+                // Map first: the buffer was unbound from the pipeline after the
+                // previous draw, and mapping a bound dynamic buffer makes the
+                // D3D11 runtime flush pending GPU work.
+                SharpDX.DataBox box = context.MapSubresource(constantsBuffer, 0, MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None);
+                try
+                {
+                    Marshal.Copy(data, 0, box.DataPointer, data.Length);
+                }
+                finally
+                {
+                    context.UnmapSubresource(constantsBuffer, 0);
+                }
+            }
+            // Bind after uploading so the next Map sees an unbound buffer.
+            context.VertexShader.SetConstantBuffer(0, constantsBuffer);
+            context.PixelShader.SetConstantBuffer(0, constantsBuffer);
+        }
+        /**
+          Binds the unit-0 cube map to the fixed-function cube slot (t2/s2) when
+          cube texgen is active, mirroring OpenGL's GL_NORMAL_MAP texgen. Returns
+          whether the fixed-function pixel shader should sample the cube map.
+          */
+        private bool updateCubeMapBinding()
+        {
+            if (cubeTexGenModes.Length == 0 || cubeTexGenModes[0] == CubeMapTexGenMode.TEXGEN_OFF)
+            {
+                return false;
+            }
+            int textureID;
+            if (!boundTextures.TryGetValue(0, out textureID))
+            {
+                return false;
+            }
+            Direct3D11Texture texture;
+            if (!textures.TryGetValue(textureID, out texture) || !texture.IsCube || texture.ShaderView == null)
+            {
+                return false;
+            }
+            context.PixelShader.SetShaderResource(2, texture.ShaderView);
+            if (texture.Sampler != null)
+            {
+                context.PixelShader.SetSampler(2, texture.Sampler);
+            }
+            else
+            {
+                context.PixelShader.SetSampler(2, getDefaultSampler());
+            }
+            return true;
         }
 
         private static int CombineModeIndex(RenderDevice.CombineMode mode)
@@ -1965,9 +2591,9 @@ namespace G3D.Direct3D11
             switch (test)
             {
                 case RenderDevice.AlphaTest.ALPHA_GREATER: return 1;
-                case RenderDevice.AlphaTest.ALPHA_LESS: return 1;
+                case RenderDevice.AlphaTest.ALPHA_LESS: return 2;
                 case RenderDevice.AlphaTest.ALPHA_GEQUAL: return 3;
-                case RenderDevice.AlphaTest.ALPHA_LEQUAL: return 3;
+                case RenderDevice.AlphaTest.ALPHA_LEQUAL: return 4;
                 case RenderDevice.AlphaTest.ALPHA_NOTEQUAL: return 5;
                 case RenderDevice.AlphaTest.ALPHA_EQUAL: return 6;
                 case RenderDevice.AlphaTest.ALPHA_ALWAYS_PASS: return 7;
@@ -2017,17 +2643,29 @@ namespace G3D.Direct3D11
         }
         public void SetRenderMode(RenderDevice.RenderMode mode)
         {
-            if (rasterizerState != null) rasterizerState.Dispose();
-            RasterizerStateDescription d = RasterizerStateDescription.Default();
-            d.IsFrontCounterClockwise = true;
-            d.FillMode = mode == RenderDevice.RenderMode.RENDER_WIREFRAME ? FillMode.Wireframe : FillMode.Solid;
-            rasterizerState = new RasterizerState(device, d); context.Rasterizer.State = rasterizerState;
+            if (mode == RenderDevice.RenderMode.RENDER_CURRENT) return;
+            renderModeState = mode;
+            applyRasterizerState();
         }
         public void SetCullFace(RenderDevice.CullFace face)
         {
+            if (face == RenderDevice.CullFace.CULL_CURRENT) return;
+            cullFaceState = face;
+            applyRasterizerState();
+        }
+        private void applyRasterizerState()
+        {
             if (rasterizerState != null) rasterizerState.Dispose();
-            RasterizerStateDescription d = RasterizerStateDescription.Default(); d.IsFrontCounterClockwise = true;
-            d.CullMode = face == RenderDevice.CullFace.CULL_FRONT ? CullMode.Front : face == RenderDevice.CullFace.CULL_BACK ? CullMode.Back : CullMode.None;
+            RasterizerStateDescription d = RasterizerStateDescription.Default();
+            d.FillMode = renderModeState == RenderDevice.RenderMode.RENDER_WIREFRAME ? FillMode.Wireframe : FillMode.Solid;
+            d.CullMode = cullFaceState == RenderDevice.CullFace.CULL_FRONT ? CullMode.Front : cullFaceState == RenderDevice.CullFace.CULL_BACK ? CullMode.Back : CullMode.None;
+            if (polygonOffset != 0)
+            {
+                d.SlopeScaledDepthBias = (float)polygonOffset;
+                d.DepthBias = polygonOffset < 0 ? -1 : 1;
+                d.DepthBiasClamp = 0.0f;
+            }
+            d.IsFrontCounterClockwise = true;
             rasterizerState = new RasterizerState(device, d); context.Rasterizer.State = rasterizerState;
         }
         public void SetBlendFunc(RenderDevice.BlendFunc src, RenderDevice.BlendFunc dst, RenderDevice.BlendEq eq)
@@ -2122,19 +2760,30 @@ namespace G3D.Direct3D11
         public void SetDepthWrite(bool enable) { depthWrite = enable; SetDepthTest(RenderDevice.DepthTest.DEPTH_CURRENT); }
         public void SetShadeMode(RenderDevice.ShadeMode mode) { }
         public void SetStencilOp(RenderDevice.StencilOp fail, RenderDevice.StencilOp zfail, RenderDevice.StencilOp zpass, RenderDevice.StencilOp backFail, RenderDevice.StencilOp backZfail, RenderDevice.StencilOp backZpass) { }
-        public void SetPolygonOffset(double offset) { }
+        public void SetPolygonOffset(double offset)
+        {
+            polygonOffset = offset;
+            applyRasterizerState();
+        }
         public void SetLineWidth(double width) { }
         public void SetPointSize(double size) { }
         public void SetScissor(Rect2D rect, bool enable) { }
-        public void SetViewport(Rect2D viewport) { viewportHeight = Math.Max(1.0f, viewport.height()); float y = Math.Max(0.0f, targetHeight - viewport.y - viewport.height()); context.Rasterizer.SetViewport(viewport.x, y, viewport.width(), viewport.height(), 0.0f, 1.0f); }
+        public void SetViewport(Rect2D viewport) { viewportHeight = Math.Max(1.0f, viewport.height()); context.Rasterizer.SetViewport(viewport.x, viewport.y, viewport.width(), viewport.height(), 0.0f, 1.0f); }
         public void SetDepthRange(double near, double far) { }
         public void SetColorClearValue(Color4 color) { clearValue = color; }
         public void SetDepthClearValue(double depth) { depthClearValue = depth; }
         public void SetStencilClearValue(int stencil) { stencilClearValue = stencil; }
-        public void SetTextureMatrix(int textureUnit, Matrix4 matrix) { textureMatrix = matrix; }
+        public void SetTextureMatrix(int textureUnit, Matrix4 matrix) { if (textureUnit >= 0 && textureUnit < textureMatrices.Length) textureMatrices[textureUnit] = matrix; }
         public void SetProjectionMatrix(Matrix4 matrix) { projection = matrix; }
         public void SetModelViewMatrix(Matrix4 matrix) { modelView = matrix; }
-        public void SetCameraToWorldMatrix(Matrix4 matrix) { cameraToWorld = matrix; }
+        public void SetCameraToWorldMatrix(Matrix4 matrix)
+        {
+            // RenderDevice re-sends the camera matrix with every object-to-world
+            // update, so only recompute the cached inverse when it really changes.
+            if (cameraToWorldInverseValid && matrix == cameraToWorld) return;
+            cameraToWorld = matrix;
+            cameraToWorldInverseValid = false;
+        }
         public void SetLight(int index, GLight light, bool enabled) { if (index >= 0 && index < lights.Length) { lights[index] = new GLight(light); lightEnabled[index] = enabled; } }
         public void SetAmbientLight(Color4 color) { ambient = color; }
         public void SetLightingEnabled(bool enabled) { lightingEnabled = enabled; }
@@ -2187,7 +2836,7 @@ namespace G3D.Direct3D11
             {
                 throw new ArgumentOutOfRangeException("milestoneID");
             }
-            context.CopyResource(milestone.Readback, milestone.Source);
+            context.CopyResource(milestone.Source, milestone.Readback);
         }
 
         public void WaitForMilestone(int milestoneID)
@@ -2264,7 +2913,7 @@ namespace G3D.Direct3D11
             });
             try
             {
-                context.CopyResource(staging, source);
+                context.CopyResource(source, staging);
                 DataBox box = context.MapSubresource(staging, 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None);
                 bool swapChannels = source.Description.Format == DxgiFormat.B8G8R8A8_UNorm;
                 try
@@ -2323,20 +2972,29 @@ namespace G3D.Direct3D11
             }
 
             DxgiFormat format = source.Description.Format;
+            DxgiFormat stagingFormat;
             int bytesPerPixel;
             int depthMode;
             switch (format)
             {
                 case DxgiFormat.D32_Float:
                 case DxgiFormat.R32_Float:
+                    stagingFormat = format;
+                    bytesPerPixel = 4;
+                    depthMode = 0;
+                    break;
+                case DxgiFormat.R32_Typeless:
+                    stagingFormat = DxgiFormat.R32_Float;
                     bytesPerPixel = 4;
                     depthMode = 0;
                     break;
                 case DxgiFormat.D24_UNorm_S8_UInt:
+                    stagingFormat = format;
                     bytesPerPixel = 4;
                     depthMode = 1;
                     break;
                 case DxgiFormat.D16_UNorm:
+                    stagingFormat = format;
                     bytesPerPixel = 2;
                     depthMode = 2;
                     break;
@@ -2351,7 +3009,7 @@ namespace G3D.Direct3D11
                 Height = source.Description.Height,
                 MipLevels = 1,
                 ArraySize = 1,
-                Format = format,
+                Format = stagingFormat,
                 SampleDescription = source.Description.SampleDescription,
                 Usage = ResourceUsage.Staging,
                 BindFlags = BindFlags.None,
@@ -2359,7 +3017,7 @@ namespace G3D.Direct3D11
             });
             try
             {
-                context.CopyResource(staging, source);
+                context.CopyResource(source, staging);
                 DataBox box = context.MapSubresource(staging, 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None);
                 try
                 {
@@ -2404,4 +3062,8 @@ namespace G3D.Direct3D11
         }
     }
 }
+
+
+
+
 

@@ -143,15 +143,20 @@ namespace G3D
 
             bool cube = (cubeMap != null);
 
-            if (cube)
+            // Check if backend supports cube map texgen (fixed-function reflection maps)
+            IGraphicsBackend backend = GLCaps.getBackendInstance();
+            bool supportsCubeMapTexGen = (backend != null) && backend.Caps.SupportsReflectionMaps;
+            bool usedTexGen = false;
+
+            if (cube && supportsCubeMapTexGen)
             {
                 rd.setTexture(0, cubeMap.pointer());
 
                 // On Radeon Mobility, explicit cube map coordinates don't work right.
                 // We instead put cube map coords in the normals and use texgen to copy
                 // them over
-                IGraphicsBackend backend = GLCaps.getBackendInstance();
                 backend.ConfigureCubeMapTexGen(0, CubeMapTexGenMode.TEXGEN_NORMAL_MAP);
+                usedTexGen = true;
 
                 CoordinateFrame cframe = rd.getCameraToWorldMatrix();
                 cframe.translation = Vector3.zero();
@@ -164,7 +169,17 @@ namespace G3D
                 CoordinateFrame cframe = CoordinateFrame.identity();
                 cframe.rotation = Matrix3.fromAxisAngle(Vector3.unitY(), (float)g3dmath.toRadians(-90));
                 rd.setObjectToWorldMatrix(cframe);
-                rd.setTexture(0, texture[(int)Direction.BK].pointer());
+
+                if (cube)
+                {
+                    // Cube map available but texgen not supported - use 6-texture fallback
+                    // We need to render the cube map faces as 6 separate quads
+                    renderCubeMapFaces(rd, cframe);
+                }
+                else
+                {
+                    rd.setTexture(0, texture[(int)Direction.BK].pointer());
+                }
             }
 
             float s = 1;
@@ -236,13 +251,73 @@ namespace G3D
             vertex(rd, +s, -s, +s, 1, 0);
             rd.endPrimitive();
 
-            if (cube)
+            if (usedTexGen)
             {
-                IGraphicsBackend backend = GLCaps.getBackendInstance();
-                backend.ConfigureCubeMapTexGen(0, CubeMapTexGenMode.TEXGEN_OFF);
+                IGraphicsBackend backend2 = GLCaps.getBackendInstance();
+                backend2.ConfigureCubeMapTexGen(0, CubeMapTexGenMode.TEXGEN_OFF);
             }
 
             rd.popState();
+        }
+
+        /**
+          Renders the 6 faces of a cube map as individual quads using the
+          6-texture rendering path.  Used as a fallback when the backend
+          doesn't support fixed-function cube map texgen.
+          */
+        private void renderCubeMapFaces(RenderDevice rd, CoordinateFrame cframe)
+        {
+            rd.setTexture(0, cubeMap.pointer());
+
+            float s = 1;
+
+            // Face 0: Negative X (LF) - matches Direction.LT
+            rd.beginPrimitive(RenderDevice.Primitive.QUADS);
+            vertex(rd, -s, +s, -s, 0, 0);
+            vertex(rd, -s, -s, -s, 0, 1);
+            vertex(rd, -s, -s, +s, 1, 1);
+            vertex(rd, -s, +s, +s, 1, 0);
+            rd.endPrimitive();
+
+            // Face 1: Positive X (RT) - matches Direction.RT
+            rd.beginPrimitive(RenderDevice.Primitive.QUADS);
+            vertex(rd, +s, +s, +s, 0, 0);
+            vertex(rd, +s, -s, +s, 0, 1);
+            vertex(rd, +s, -s, -s, 1, 1);
+            vertex(rd, +s, +s, -s, 1, 0);
+            rd.endPrimitive();
+
+            // Face 2: Negative Y (DN) - matches Direction.DN
+            rd.beginPrimitive(RenderDevice.Primitive.QUADS);
+            vertex(rd, +s, -s, -s, 0, 0);
+            vertex(rd, -s, -s, -s, 0, 1);
+            vertex(rd, -s, -s, +s, 1, 1);
+            vertex(rd, +s, -s, +s, 1, 0);
+            rd.endPrimitive();
+
+            // Face 3: Positive Y (UP) - matches Direction.UP
+            rd.beginPrimitive(RenderDevice.Primitive.QUADS);
+            vertex(rd, +s, +s, +s, 1, 1);
+            vertex(rd, -s, +s, +s, 1, 0);
+            vertex(rd, -s, +s, -s, 0, 0);
+            vertex(rd, +s, +s, -s, 0, 1);
+            rd.endPrimitive();
+
+            // Face 4: Positive Z (FT) - matches Direction.FT
+            rd.beginPrimitive(RenderDevice.Primitive.QUADS);
+            vertex(rd, +s, +s, +s, 0, 0);
+            vertex(rd, +s, -s, +s, 0, 1);
+            vertex(rd, -s, -s, +s, 1, 1);
+            vertex(rd, -s, +s, +s, 1, 0);
+            rd.endPrimitive();
+
+            // Face 5: Negative Z (BK) - matches Direction.BK
+            rd.beginPrimitive(RenderDevice.Primitive.QUADS);
+            vertex(rd, -s, +s, -s, 0, 0);
+            vertex(rd, -s, -s, -s, 0, 1);
+            vertex(rd, +s, -s, -s, 1, 1);
+            vertex(rd, +s, +s, -s, 1, 0);
+            rd.endPrimitive();
         }
 
         /** Draw the sun, called by render() */
@@ -293,11 +368,15 @@ namespace G3D
                     (lighting.physicallyCorrect ? lighting.trueStarFrame : lighting.starFrame));
                 rd.setBlendFunc(RenderDevice.BlendFunc.BLEND_SRC_ALPHA, RenderDevice.BlendFunc.BLEND_ONE);
 
+                // The original issued glPointSize immediately before each
+                // glBegin(GL_POINTS).  The points are batched into one primitive
+                // here, so the point size is applied before the primitive
+                // begins rather than inside it.
+                rd.setPointSize(star.size() > 0 ? starIntensity[0] * s : 0);
                 rd.beginPrimitive(RenderDevice.Primitive.POINTS);
                 for (int i = star.size() - 1; i >= 0; --i)
                 {
                     float b = starIntensity[i] * k;
-                    rd.setPointSize(starIntensity[i] * s);
                     rd.setColor(new Color3(b * lighting.emissiveScale.r, b * lighting.emissiveScale.g, b * lighting.emissiveScale.b));
                     rd.sendVertex(star[i]);
                 }
@@ -431,10 +510,14 @@ namespace G3D
             double w = 0;
             bool cube = (cubeMap != null);
 
+            // Always set normal for lighting - for skybox the vertex position IS the normal
+            // since it's a unit cube centered at origin
+            renderDevice.setNormal(new Vector3(x, y, z));
+
             if (cube)
             {
                 // Texcoord generation will move this normal to tex coord 0
-                renderDevice.setNormal(new Vector3(x, y, z));
+                // Normal already set above
             }
             else
             {
@@ -570,35 +653,66 @@ namespace G3D
             ReferenceCountedPointer<Texture>[] faceTextures = new ReferenceCountedPointer<Texture>[6];
             bool useCubeMap;
 
-            // The cube map path requires texture coordinate generation, which is
-            // a backend specific feature that is not ported yet.  The six texture
-            // path produces the same image.
-            useCubeMap = false;
+            IGraphicsBackend backend = GLCaps.getBackendInstance();
+            bool supportsCubeMaps = (backend != null) && backend.Caps.SupportsCubeMaps;
+            bool supportsReflectionMaps = (backend != null) && backend.Caps.SupportsReflectionMaps;
+            bool hasNormalMapBug = (backend != null) && backend.HasBug_normalMapTexGen();
 
-            // This card doesn't support cube maps; it probably has low memory as well, so we
-            // switch to bilinear instead of trilinear to save space on the mipmaps.
-
-            string[] ext = new string[] { "up", "lf", "rt", "bk", "ft", "dn" };
-
-            if (filename[1] == "")
+            if (supportsCubeMaps && supportsReflectionMaps && !hasNormalMapBug)
             {
-                // Specified one cube map
-                for (int t = 0; t < 6; ++t)
+                // Use cube map with trilinear filtering for better quality
+                if (filename[1] == "")
                 {
-                    faceTextures[t] = new ReferenceCountedPointer<Texture>(Texture.fromFile(filenameBase + ext[t] + filenameExt,
-                        format, Texture.WrapMode.CLAMP, Texture.InterpolateMode.BILINEAR_NO_MIPMAP, Texture.Dimension.DIM_2D,
+                    // Specified one cube map
+                    faceTextures[0] = new ReferenceCountedPointer<Texture>(Texture.fromFile(filenameBase + "*" + filenameExt,
+                        format, Texture.WrapMode.CLAMP, Texture.InterpolateMode.TRILINEAR_MIPMAP, Texture.Dimension.DIM_CUBE_MAP,
                         1.0, Texture.DepthReadMode.DEPTH_NORMAL, 1.0f, 1.0f / scaleDownFactor));
                 }
+                else
+                {
+                    // Specified six textures
+                    faceTextures[0] = new ReferenceCountedPointer<Texture>(Texture.fromFile(filename,
+                        format, Texture.WrapMode.CLAMP, Texture.InterpolateMode.TRILINEAR_MIPMAP, Texture.Dimension.DIM_CUBE_MAP,
+                        1.0, Texture.DepthReadMode.DEPTH_NORMAL, 1.0f, 1.0f / scaleDownFactor));
+                }
+
+                // For the cube map case, we don't need the other five texture slots
+                for (int t = 1; t < 6; ++t)
+                {
+                    faceTextures[t] = null;
+                }
+
+                useCubeMap = true;
             }
             else
             {
-                // Specified six textures
-                for (int t = 0; t < 6; ++t)
+                // This card doesn't support cube maps; it probably has low memory as well, so we
+                // switch to bilinear instead of trilinear to save space on the mipmaps.
+
+                string[] ext = new string[] { "up", "lf", "rt", "bk", "ft", "dn" };
+
+                if (filename[1] == "")
                 {
-                    faceTextures[t] = new ReferenceCountedPointer<Texture>(Texture.fromFile(filename[t],
-                        format, Texture.WrapMode.CLAMP, Texture.InterpolateMode.BILINEAR_NO_MIPMAP, Texture.Dimension.DIM_2D,
-                        1.0, Texture.DepthReadMode.DEPTH_NORMAL, 1.0f, 1.0f / scaleDownFactor));
+                    // Specified one cube map
+                    for (int t = 0; t < 6; ++t)
+                    {
+                        faceTextures[t] = new ReferenceCountedPointer<Texture>(Texture.fromFile(filenameBase + ext[t] + filenameExt,
+                            format, Texture.WrapMode.CLAMP, Texture.InterpolateMode.BILINEAR_NO_MIPMAP, Texture.Dimension.DIM_2D,
+                            1.0, Texture.DepthReadMode.DEPTH_NORMAL, 1.0f, 1.0f / scaleDownFactor));
+                    }
                 }
+                else
+                {
+                    // Specified six textures
+                    for (int t = 0; t < 6; ++t)
+                    {
+                        faceTextures[t] = new ReferenceCountedPointer<Texture>(Texture.fromFile(filename[t],
+                            format, Texture.WrapMode.CLAMP, Texture.InterpolateMode.BILINEAR_NO_MIPMAP, Texture.Dimension.DIM_2D,
+                            1.0, Texture.DepthReadMode.DEPTH_NORMAL, 1.0f, 1.0f / scaleDownFactor));
+                    }
+                }
+
+                useCubeMap = false;
             }
 
             return new ReferenceCountedPointer<Sky>(new Sky(renderDevice, faceTextures, directory, useCubeMap, drawCelestialBodies, quality));

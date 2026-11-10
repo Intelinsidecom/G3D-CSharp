@@ -149,6 +149,18 @@ namespace G3D
                 throw new ArgumentNullException("w");
             }
             window = w;
+            window.InputEvent += postEvent;
+        }
+
+        /**
+          Forwarded to the wrapped platform window so that subscribers see the
+          same input events.  The events are additionally queued (through
+          postEvent, subscribed above) so that pollEvent can drain them.
+        */
+        public event Action<GEvent> InputEvent
+        {
+            add { window.InputEvent += value; }
+            remove { window.InputEvent -= value; }
         }
 
         public IntPtr NativeHandle
@@ -190,6 +202,7 @@ namespace G3D
                 {
                     currentWindow = null;
                 }
+                window.InputEvent -= postEvent;
                 window.Dispose();
             }
         }

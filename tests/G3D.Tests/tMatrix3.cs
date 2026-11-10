@@ -33,10 +33,13 @@ namespace G3D.Tests
             Matrix3 rY = Matrix3.fromAxisAngle(Vector3.UNIT_Y, y);
             Matrix3 rZ = Matrix3.fromAxisAngle(Vector3.UNIT_Z, z);
             Matrix3 rot = rZ * rX * rY;
-            rot.toEulerAnglesZXY(out x2, out y2, out z2);
+            // The ZXY decomposition of Z(z)*X(x)*Y(y) is (Z, X, Y) = (z, x, y),
+            // which matches the parameter order of toEulerAnglesZXY.  The original
+            // C++ test asserted against (x, y, z) in those slots, which is wrong.
+            rot.toEulerAnglesZXY(out z2, out x2, out y2);
+            Debug.debugAssert(g3dmath.fuzzyEq(z, z2));
             Debug.debugAssert(g3dmath.fuzzyEq(x, x2));
             Debug.debugAssert(g3dmath.fuzzyEq(y, y2));
-            Debug.debugAssert(g3dmath.fuzzyEq(z, z2));
         }
 
         private static void testMatrix3()

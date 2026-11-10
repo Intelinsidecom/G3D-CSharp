@@ -91,7 +91,7 @@ namespace Collision_Demo
 
             app.renderDevice.pushState();
 
-            // Ambient and detail light pass. 
+            // Ambient and detail light pass.
             app.renderDevice.enableLighting();
             ambientLight = GLight.directional(-lighting.lightDirection, Color3.white() * .25f);
             app.renderDevice.setLight(0, ambientLight);

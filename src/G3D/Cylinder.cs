@@ -107,7 +107,7 @@ namespace G3D
         public float volume()
         {
             return
-                (float)(g3dmath.G3D_PI * g3dmath.square(mRadius) * (p1 - p2).magnitude());
+                (float)(g3dmath.G3D_PI * g3dmath.square((double)mRadius) * (p1 - p2).magnitude());
         }
 
         public float radius()

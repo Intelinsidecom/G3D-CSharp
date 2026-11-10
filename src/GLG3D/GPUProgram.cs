@@ -150,6 +150,312 @@ namespace G3D
         }
 
         /**
+          Manages the constants in a vertex or fragment program produced by Cg, where
+          the header has comments of the form:
+
+           # const c[N] = V0 V1 V2 V3
+
+           where N, V0, V1, V2, and V3 are numbers.
+         */
+        private class BindingTable
+        {
+            /**
+              A constant, variable, or matrix binding for a vertex program.
+             */
+            public class Binding
+            {
+                /**
+                  When the slot is UNASSIGNED, the variable
+                  was declared but never used; it has no slot.
+                 */
+                public const int UNASSIGNED = -1;
+
+                /**
+                  Variable/constant name
+                 */
+                public string         name;
+
+                /**
+                  Which const register receives this value.
+                 */
+                public int             slot;
+
+                public Type            type;
+
+                public Source          source;
+
+                /** Used by constants only */
+                public Vector4         vector;
+            }
+
+            private List<Binding> bindingArray = new List<Binding>();
+
+            private static bool symbolMatch(Token t, string s)
+            {
+                return (t.type == Token.Type.SYMBOL) && (t.str == s);
+            }
+
+            /**
+              Returns true if it is able to consume the next symbol, which must match s.
+             */
+            private static bool consumeSymbol(TextInput ti, string s)
+            {
+                Token t = ti.peek();
+                if (symbolMatch(t, s))
+                {
+                    ti.readSymbol(s);
+                    return true;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+
+            /** Called from parse() */
+            private void parseVariable(TextInput ti)
+            {
+                string name;
+
+                // #var float4 osLight :  : c[4] : 1 : 1
+                // #var float3 vin.v0 : $vin.POSITION : ATTR0 : 2 : 1
+
+                Token t = ti.peek();
+                if (t.type != Token.Type.SYMBOL)
+                {
+                    goto abort;
+                }
+                // get the binding's type
+                ti.readSymbol();
+                Type type;
+
+                if (!CgType(t.str, out type))
+                {
+                    Debug.alwaysAssertM(false, "Unsupported type: \"" + t.str + "\"");
+                }
+
+                t = ti.peek();
+                if (t.type != Token.Type.SYMBOL)
+                {
+                    goto abort;
+                }
+                // read the binding name
+                name = ti.readSymbol();
+
+                if (!consumeSymbol(ti, ":"))
+                {
+                    goto abort;
+                }
+
+                // see if it is the vertex or a constant register
+                t = ti.peek();
+
+                if (t.type != Token.Type.SYMBOL)
+                {
+                    goto abort;
+                }
+
+                // Sometimes there is an extra token between the colons
+                if (t.str != ":")
+                {
+                    ti.readSymbol();
+                    t = ti.peek();
+                }
+
+                if (!consumeSymbol(ti, ":"))
+                {
+                    goto abort;
+                }
+
+                // read the register number
+                t = ti.peek();
+
+                if (t.type != Token.Type.SYMBOL)
+                {
+                    goto abort;
+                }
+
+                // Consume the symbol we just peeked
+                ti.readSymbol();
+
+                if (t.str == "texunit")
+                {
+                    // We're reading a texture unit
+
+                }
+                else if (t.str == "c")
+                {
+                    // We're reading a regular variable; parse the open bracket
+
+                    if (!consumeSymbol(ti, "["))
+                    {
+                        goto abort;
+                    }
+
+                }
+                else if ((t.type == Token.Type.SYMBOL) && (t.str == ":"))
+                {
+                    // Unused variable; must be present but is not bound
+
+                    Binding binding = new Binding();
+                    binding.source = Source.VARIABLE;
+                    binding.type = type;
+                    binding.name = name;
+                    binding.slot = Binding.UNASSIGNED;
+                    bindingArray.Add(binding);
+                    return;
+
+                }
+                else
+                {
+                    // Something unexpected happened.
+                    goto abort;
+                }
+
+                t = ti.peek();
+
+                if (t.type == Token.Type.NUMBER)
+                {
+                    int slot = g3dmath.iRound(ti.readNumber());
+                    Binding binding = new Binding();
+                    binding.source = Source.VARIABLE;
+                    binding.type = type;
+                    binding.name = name;
+                    binding.slot = slot;
+                    bindingArray.Add(binding);
+                }
+
+            abort:;
+                // Jump here if anything unexpected is encountered during parsing
+            }
+
+            /** Called from parse() */
+            private void parseConstant(TextInput ti)
+            {
+                if (consumeSymbol(ti, "c") && consumeSymbol(ti, "["))
+                {
+                    // constant
+                    Token t = ti.peek();
+
+                    if (t.type == Token.Type.NUMBER)
+                    {
+                        Binding binding = new Binding();
+                        binding.source = Source.CONSTANT;
+                        binding.type   = Type.FLOAT4;
+                        binding.slot   = g3dmath.iRound(ti.readNumber());
+
+                        if (consumeSymbol(ti, "]") && consumeSymbol(ti, "="))
+                        {
+                            for (int i = 0; i < 4; ++i)
+                            {
+                                t = ti.peek();
+                                if (t.type == Token.Type.NUMBER)
+                                {
+                                    binding.vector[i] = (float)ti.readNumber();
+                                }
+                            }
+                            bindingArray.Add(binding);
+                        }
+                    }
+                }
+            }
+
+            /**
+              Initializes from a Cg generated assembly program.
+             */
+            public void parse(string code)
+            {
+                bindingArray.Clear();
+
+                TextInput ti = new TextInput(TextInput.FS.FROM_STRING, code);
+
+                while (ti.hasMore())
+                {
+                    Token t = ti.read();
+                    // Scan for "#"
+                    while (!symbolMatch(t, "#") && ti.hasMore())
+                    {
+                        t = ti.read();
+                    }
+
+                    if (ti.hasMore())
+                    {
+                        // Read the comment line
+                        Token nextToken = ti.peek();
+                        if (nextToken.type == Token.Type.SYMBOL)
+                        {
+                            ti.readSymbol();
+                            if (nextToken.str == "var")
+                            {
+
+                                parseVariable(ti);
+
+                            }
+                            else if (nextToken.str == "const")
+                            {
+
+                                parseConstant(ti);
+
+                            }
+                        }
+                    }
+                }
+            }
+
+            /**
+              Binds constants using the NVIDIA API.
+             */
+            public void nvBind(int target)
+            {
+                for (int b = 0; b < bindingArray.Count; ++b)
+                {
+                    Binding binding = bindingArray[b];
+
+                    if ((binding.source == Source.CONSTANT) && (binding.type == Type.FLOAT4))
+                    {
+                        IGraphicsBackend backend = GLCaps.getBackendInstance();
+                        if (backend == null)
+                        {
+                            throw new InvalidOperationException("GLCaps has not been initialized.");
+                        }
+                        backend.SetAssemblyProgramLocalParameter(target, binding.slot, binding.vector);
+                    }
+                }
+            }
+
+            /**
+              Binds constants using the ARB API.
+             */
+            public void arbBind(int target)
+            {
+                for (int b = 0; b < bindingArray.Count; ++b)
+                {
+                    Binding binding = bindingArray[b];
+
+                    if ((binding.source == Source.CONSTANT) && (binding.type == Type.FLOAT4))
+                    {
+                        IGraphicsBackend backend = GLCaps.getBackendInstance();
+                        if (backend == null)
+                        {
+                            throw new InvalidOperationException("GLCaps has not been initialized.");
+                        }
+                        backend.SetAssemblyProgramLocalParameter(target, binding.slot, binding.vector);
+                    }
+                }
+            }
+
+            internal int count()
+            {
+                return bindingArray.Count;
+            }
+
+            internal Binding get(int i)
+            {
+                return bindingArray[i];
+            }
+        }
+
+        /**
          Argument list for a vertex program.
          See RenderDevice::setVertexProgram
          and RenderDevice::setPixelProgram.
@@ -205,6 +511,21 @@ namespace G3D
             {
                 return args;
             }
+
+            internal object get(string name)
+            {
+                return args[name];
+            }
+
+            internal int count()
+            {
+                return args.Count;
+            }
+
+            internal IEnumerable<string> getKeys()
+            {
+                return args.Keys;
+            }
         }
 
         public class Settings
@@ -222,6 +543,9 @@ namespace G3D
                 defines = "";
             }
         }
+
+        /** Formal parameters */
+        private BindingTable bindingTable = new BindingTable();
 
         protected string name;
         protected object backendHandle;
@@ -268,6 +592,49 @@ namespace G3D
         }
 
         /**
+          Loads an ARB/NVIDIA assembly language program.  The original saved and
+          restored all attributes with glPushAttrib/glPopAttrib around the enable;
+          the port enables and then disables the program unit, which has the same
+          result whenever no other program of the same kind was active.
+         */
+        protected void loadAssemblyProgram(string code)
+        {
+            IGraphicsBackend backend = GLCaps.getBackendInstance();
+            if (backend == null)
+            {
+                throw new InvalidOperationException("GLCaps has not been initialized.");
+            }
+
+            Extension assemblyExtension;
+            unit = getUnitFromCode(code, out assemblyExtension);
+            extension = assemblyExtension;
+
+            backend.EnableAssemblyProgram(unit, true);
+
+            uint id;
+            genPrograms(1, out id);
+            glProgram = id;
+            bindProgram(unit, glProgram);
+            backend.LoadAssemblyProgram(unit, (int)glProgram, code);
+
+            int pos;
+            string msg;
+            getProgramError(out pos, out msg);
+            if (msg.Length > 0)
+            {
+                deletePrograms(1, glProgram);
+                glProgram = 0;
+                backend.EnableAssemblyProgram(unit, false);
+                throw new InvalidOperationException(
+                    string.Format("GPU Program Error in \"{0}\" ({1}): {2}", filename, pos, msg));
+            }
+
+            bindingTable.parse(code);
+
+            backend.EnableAssemblyProgram(unit, false);
+        }
+
+        /**
           Determines which unit and extension API a shader uses from the first line.
          */
         protected static int getUnitFromCode(string code, out Extension extension)
@@ -309,7 +676,12 @@ namespace G3D
          */
         protected void genPrograms(int num, out uint id)
         {
-            throw new NotSupportedException("Legacy ARB/NVIDIA assembly GPU programs are not supported by the backend-neutral GLG3D layer.");
+            IGraphicsBackend backend = GLCaps.getBackendInstance();
+            if (backend == null)
+            {
+                throw new InvalidOperationException("GLCaps has not been initialized.");
+            }
+            id = (uint)backend.GenAssemblyProgram(unit);
         }
 
         protected void bindProgram(int unit, uint glProgram)
@@ -319,22 +691,47 @@ namespace G3D
             {
                 throw new InvalidOperationException("GLCaps has not been initialized.");
             }
-            backend.UseShaderProgram((int)glProgram);
+            switch (extension)
+            {
+                case Extension.NVIDIA:
+                    bindingTable.nvBind(unit);
+                    break;
+
+                case Extension.ARB:
+                    bindingTable.arbBind(unit);
+                    break;
+            }
+            backend.BindAssemblyProgram(unit, (int)glProgram);
         }
 
         protected void loadProgram(string code)
         {
-            throw new NotSupportedException("Legacy ARB/NVIDIA assembly GPU programs are not supported by the backend-neutral GLG3D layer.");
+            IGraphicsBackend backend = GLCaps.getBackendInstance();
+            if (backend == null)
+            {
+                throw new InvalidOperationException("GLCaps has not been initialized.");
+            }
+            backend.LoadAssemblyProgram(unit, (int)glProgram, code);
         }
 
         protected void loadConstant(int slot, Vector4 value)
         {
-            throw new NotSupportedException("Legacy ARB/NVIDIA assembly GPU program constant registers are not supported by the backend-neutral GLG3D layer.");
+            IGraphicsBackend backend = GLCaps.getBackendInstance();
+            if (backend == null)
+            {
+                throw new InvalidOperationException("GLCaps has not been initialized.");
+            }
+            backend.SetAssemblyProgramLocalParameter(unit, slot, value);
         }
 
         protected void getProgramError(out int pos, out string msg)
         {
-            throw new NotSupportedException("Legacy ARB/NVIDIA assembly GPU program errors are not supported by the backend-neutral GLG3D layer.");
+            IGraphicsBackend backend = GLCaps.getBackendInstance();
+            if (backend == null)
+            {
+                throw new InvalidOperationException("GLCaps has not been initialized.");
+            }
+            backend.GetAssemblyProgramError(unit, out pos, out msg);
         }
 
         protected void deletePrograms(int num, uint id)
@@ -346,15 +743,20 @@ namespace G3D
             }
             if (id != 0)
             {
-                backend.DeleteShaderProgram((int)id);
+                backend.DeleteAssemblyProgram((int)id);
             }
         }
 
         /**
             Called by RenderDevice::setVertexProgram() and RenderDevice::setPixelProgram()
         */
-        protected virtual void setArgs(RenderDevice renderDevice, ArgList args)
+        protected internal virtual void setArgs(RenderDevice renderDevice, ArgList args)
         {
+            if (isAssembly())
+            {
+                setAssemblyArgs(renderDevice, args);
+                return;
+            }
             if (programInfo == null)
             {
                 throw new InvalidOperationException("The program was not compiled.");
@@ -409,12 +811,220 @@ namespace G3D
             }
         }
 
+        /**
+          Converts an ArgList value to the Cg representation used by assembly
+          programs: a row-major vector array plus the type the original ArgList
+          would have derived from it.
+         */
+        private static bool tryGetAssemblyArg(object value, out Type type, out Vector4[] vector, out Texture texture)
+        {
+            type = Type.FLOAT1;
+            vector = new Vector4[4];
+            texture = null;
+
+            if (value is Texture)
+            {
+                texture = (Texture)value;
+                switch (texture.getDimension())
+                {
+                    case Texture.Dimension.DIM_2D_NPOT:
+                    case Texture.Dimension.DIM_2D:
+                        type = Type.SAMPLER2D;
+                        break;
+
+                    case Texture.Dimension.DIM_2D_RECT:
+                        type = Type.SAMPLERRECT;
+                        break;
+
+                    case Texture.Dimension.DIM_CUBE_MAP_NPOT:
+                    case Texture.Dimension.DIM_CUBE_MAP:
+                        type = Type.SAMPLERCUBE;
+                        break;
+                }
+                return true;
+            }
+            else if (value is CoordinateFrame)
+            {
+                type = Type.FLOAT4X4;
+                Matrix4 m = ((CoordinateFrame)value).toMatrix4();
+                for (int r = 0; r < 4; ++r)
+                {
+                    vector[r] = m.getRow(r);
+                }
+                return true;
+            }
+            else if (value is Matrix4)
+            {
+                type = Type.FLOAT4X4;
+                Matrix4 m = (Matrix4)value;
+                for (int r = 0; r < 4; ++r)
+                {
+                    vector[r] = m.getRow(r);
+                }
+                return true;
+            }
+            else if (value is Matrix3)
+            {
+                type = Type.FLOAT3X3;
+                Matrix3 m = (Matrix3)value;
+                for (int r = 0; r < 3; ++r)
+                {
+                    vector[r] = new Vector4(m.getRowVector(r), 0);
+                }
+                return true;
+            }
+            else if (value is Vector4)
+            {
+                type = Type.FLOAT4;
+                vector[0] = (Vector4)value;
+                return true;
+            }
+            else if (value is Vector3)
+            {
+                type = Type.FLOAT3;
+                vector[0] = new Vector4((Vector3)value, 0);
+                return true;
+            }
+            else if (value is Vector2)
+            {
+                type = Type.FLOAT2;
+                vector[0] = new Vector4((Vector2)value, 0, 0);
+                return true;
+            }
+            else if (value is float)
+            {
+                type = Type.FLOAT1;
+                vector[0] = new Vector4((float)value, 0, 0, 0);
+                return true;
+            }
+
+            return false;
+        }
+
+        /**
+          Binds arguments to an ARB/NVIDIA assembly program using the bindings
+          parsed from the Cg header comments.
+         */
+        private void setAssemblyArgs(RenderDevice renderDevice, ArgList args)
+        {
+            int numVariables = 0;
+
+            // Iterate through formal bindings
+            for (int b = 0; b < bindingTable.count(); ++b)
+            {
+                BindingTable.Binding binding = bindingTable.get(b);
+
+                if (binding.source == GPUProgram.Source.VARIABLE)
+                {
+                    ++numVariables;
+                    Type argType;
+                    Vector4[] argVector;
+                    Texture argTexture;
+
+                    if (!args.has(binding.name) ||
+                        !tryGetAssemblyArg(args.get(binding.name), out argType, out argVector, out argTexture))
+                    {
+                        throw new InvalidOperationException("No value provided for GPUProgram variable \"" + binding.name + "\"");
+                    }
+
+                    // check the type
+                    if (argType != binding.type)
+                    {
+                        throw new InvalidOperationException(
+                            "Variable \"" + binding.name + "\" was declared as type " +
+                            GPUProgram.toString(binding.type) + " and the values supplied" +
+                            " at runtime had type " + GPUProgram.toString(argType));
+                    }
+
+                    if (binding.slot != BindingTable.Binding.UNASSIGNED)
+                    {
+                        switch (binding.type)
+                        {
+                        case GPUProgram.Type.SAMPLER1D:
+                        case GPUProgram.Type.SAMPLER2D:
+                        case GPUProgram.Type.SAMPLER3D:
+                        case GPUProgram.Type.SAMPLERCUBE:
+                        case GPUProgram.Type.SAMPLERRECT:
+                            renderDevice.setTexture((uint)binding.slot, argTexture);
+                            break;
+
+                        case GPUProgram.Type.FLOAT4:
+                        case GPUProgram.Type.FLOAT3:
+                        case GPUProgram.Type.FLOAT2:
+                        case GPUProgram.Type.FLOAT1:
+                            loadConstant(binding.slot, argVector[0]);
+                            break;
+
+                        case GPUProgram.Type.FLOAT2X2:
+                            throw new NotSupportedException("FLOAT2X2 not implemented.");
+
+                        case GPUProgram.Type.FLOAT3X3:
+                            for (int s = 0; s < 3; ++s)
+                            {
+                                loadConstant(binding.slot + s, argVector[s]);
+                            }
+                            break;
+
+                        case GPUProgram.Type.FLOAT4X4:
+                            for (int s = 0; s < 4; ++s)
+                            {
+                                loadConstant(binding.slot + s, argVector[s]);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (numVariables < args.count())
+            {
+                // Some variables were unused.  Figure out which they were.
+                foreach (string argName in args.getKeys())
+                {
+                    // See if this arg was in the formal binding list
+
+                    bool foundArgument = false;
+
+                    for (int b = 0; b < bindingTable.count(); ++b)
+                    {
+                        if (bindingTable.get(b).name == argName)
+                        {
+                            foundArgument = true;
+                            break;
+                        }
+                    }
+
+                    Debug.debugAssertM(foundArgument,
+                        "Unused GPU program argument specified: \"" + argName + "\".");
+                }
+            }
+        }
+
         public string getName()
         {
             return name;
         }
 
-        public bool ok() { return programInfo != null && programInfo.Success; }
+        /**
+          Internal use only.  Reports whether a source is an ARB/NVIDIA assembly
+          program and, when it is, the unit and extension set it uses.
+         */
+        protected static bool isAssemblyCode(string code, out int unit, out Extension extension)
+        {
+            int u = getUnitFromCode(code, out extension);
+            unit = u;
+            return u != GL_NONE;
+        }
+
+        /**
+          True when this program was loaded from an ARB/NVIDIA assembly source.
+         */
+        protected bool isAssembly()
+        {
+            return unit != GL_NONE;
+        }
+
+        public bool ok() { return isAssembly() ? glProgram != 0 : (programInfo != null && programInfo.Success); }
         public string messages() { return programInfo == null ? "" : programInfo.Messages; }
 
         /**
@@ -427,15 +1037,6 @@ namespace G3D
 
         public virtual void reload(string code)
         {
-            Extension legacyExtension;
-            int legacyUnit = getUnitFromCode(code == null ? "" : code, out legacyExtension);
-            unit = legacyUnit;
-            extension = legacyExtension;
-            if (legacyUnit != GL_NONE)
-            {
-                throw new NotSupportedException("Legacy ARB/NVIDIA assembly GPU programs are not supported by the backend-neutral GLG3D layer.");
-            }
-
             string newCode = code;
             if (newCode == null || newCode == "")
             {
@@ -447,6 +1048,16 @@ namespace G3D
                 {
                     newCode = vertexStage ? vertexSource : pixelSource;
                 }
+            }
+
+            Extension reloadExtension;
+            int reloadUnit = getUnitFromCode(newCode, out reloadExtension);
+            if (reloadUnit != GL_NONE)
+            {
+                deletePrograms(1, glProgram);
+                glProgram = 0;
+                loadAssemblyProgram(newCode);
+                return;
             }
 
             if (vertexStage)
@@ -474,6 +1085,12 @@ namespace G3D
             {
                 throw new InvalidOperationException("GLCaps has not been initialized.");
             }
+            if (isAssembly())
+            {
+                backend.EnableAssemblyProgram(unit, true);
+                bindProgram(unit, glProgram);
+                return;
+            }
             if (programInfo == null)
             {
                 throw new InvalidOperationException("The program was not compiled.");
@@ -490,6 +1107,11 @@ namespace G3D
             if (backend == null)
             {
                 throw new InvalidOperationException("GLCaps has not been initialized.");
+            }
+            if (isAssembly())
+            {
+                backend.EnableAssemblyProgram(unit, false);
+                return;
             }
             if (backend.Kind != GraphicsBackendKind.OpenGL)
             {
@@ -570,7 +1192,13 @@ namespace G3D
 
         protected override void dispose()
         {
-            if (programInfo != null && programInfo.ProgramID != 0)
+            if (isAssembly())
+            {
+                deletePrograms(1, glProgram);
+                glProgram = 0;
+                unit = 0;
+            }
+            else if (programInfo != null && programInfo.ProgramID != 0)
             {
                 IGraphicsBackend backend = GLCaps.getBackendInstance();
                 if (backend != null)
@@ -582,6 +1210,20 @@ namespace G3D
                 backendHandle = null;
             }
             base.dispose();
+        }
+
+        /**
+          Sets a program.local parameter on an ARB/NVIDIA assembly program.
+          This replaces the original raw glProgramLocalParameter4fARB call used
+          by the demos, which cannot be expressed through the backend-neutral API.
+         */
+        public void setLocalParameter(int slot, Vector4 value)
+        {
+            if (!isAssembly())
+            {
+                throw new InvalidOperationException("The program is not an ARB/NVIDIA assembly program.");
+            }
+            loadConstant(slot, value);
         }
 
         internal object getBackendHandle()

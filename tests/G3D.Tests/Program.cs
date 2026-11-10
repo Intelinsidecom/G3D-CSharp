@@ -766,6 +766,8 @@ namespace G3D.Tests
 
             testMatrix();
 
+            testBigInt();
+
             testCoreValueMath();
 
             testCoreUtilities();

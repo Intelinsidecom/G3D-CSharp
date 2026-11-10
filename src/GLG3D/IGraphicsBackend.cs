@@ -59,6 +59,15 @@ namespace G3D
         void UniformTexture(int location, int textureUnit);
         void SetShaderTexture(int programID, int textureUnit, int textureID, Texture.Dimension dimension);
 
+        // Abstraction over NVIDIA/ARB extensions
+        int GenAssemblyProgram(int unit);
+        void DeleteAssemblyProgram(int program);
+        void BindAssemblyProgram(int unit, int program);
+        void LoadAssemblyProgram(int unit, int program, string code);
+        void SetAssemblyProgramLocalParameter(int unit, int slot, Vector4 value);
+        void GetAssemblyProgramError(int unit, out int pos, out string msg);
+        void EnableAssemblyProgram(int unit, bool enabled);
+
         // Vertex Array / VBO management
         int CreateVertexArray();
         void DeleteVertexArray(int vaoID);
@@ -98,6 +107,13 @@ namespace G3D
 
         // Draw calls
         void DrawArrays(RenderDevice.Primitive primitive, int first, int count);
+        /**
+          Draws indexed geometry from vertex arrays.  The index array is supplied
+          by the caller: the original RenderDevice passed the caller's index buffer
+          straight to glDrawElements instead of staging it through a VAR.
+        */
+        void DrawVAR(RenderDevice.Primitive primitive, int numIndices, VAR vertexArray, VAR normalArray, VAR colorArray, VAR texCoordArray, uint[] index);
+
         void DrawElements(RenderDevice.Primitive primitive, int count, int type, int offset);
         void DrawElementsInstanced(RenderDevice.Primitive primitive, int count, int type, int offset, int instanceCount);
 

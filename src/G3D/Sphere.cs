@@ -205,13 +205,14 @@ namespace G3D
 
         public float volume()
         {
-            return (float)g3dmath.G3D_PI * (4.0f / 3.0f) * (float)Math.Pow((float)radius, 3.0f);
+            // The C++ computes powf((float)radius, 3.0f) in single precision.
+            return (float)g3dmath.G3D_PI * (4.0f / 3.0f) * (float)Math.Pow((double)radius, 3.0);
         }
 
         /** @deprecated */
         public float surfaceArea()
         {
-            return (float)g3dmath.G3D_PI * 4.0f * (float)Math.Pow((float)radius, 2.0f);
+            return (float)g3dmath.G3D_PI * 4.0f * (float)Math.Pow((double)radius, 2.0);
         }
 
         public float area()
